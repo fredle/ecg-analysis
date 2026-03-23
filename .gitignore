@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Data — large binary/parquet files
+data/raw/
+data/ecg_raw/
+data/*.parquet
+uploads/
+
+# Local DB
+*.db
+
+# Generated reports
+bigeminy_report.json
+bigeminy_timeline.html
+ecg_timeline.html
+
+# Models (large binaries)
+models/
+
+# Import folder (device files)
+import/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

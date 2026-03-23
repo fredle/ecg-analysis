@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Reprocess — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  .container { max-width: 760px; }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar-btn { background: none; border: 1px solid var(--border); color: var(--text-dim); border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
+  .toolbar-btn:hover { border-color: var(--accent); color: var(--text); }
+  .selected-count { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+  .date-group { margin-bottom: 20px; }
+  .date-header { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; padding: 6px 0; border-bottom: 1px solid var(--border); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .date-header:hover { color: var(--text); }
+  .date-header .sel-day { font-size: 11px; color: var(--accent); margin-left: auto; }
+  .file-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 7px; cursor: pointer; transition: background 0.15s; }
+  .file-row:hover { background: rgba(108,140,255,0.06); }
+  .file-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+  .file-name { font-family: 'Cascadia Code','Fira Code',monospace; font-size: 13px; flex: 1; color: var(--accent); }
+  .file-time { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+  .file-size { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  .empty-state { text-align: center; padding: 60px 24px; color: var(--text-dim); font-size: 15px; }
+  .submit-bar { position: sticky; bottom: 0; background: var(--bg); padding: 16px 0; border-top: 1px solid var(--border); margin-top: 24px; display: flex; align-items: center; gap: 16px; }
+  .btn-submit { padding: 11px 32px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+  .btn-submit:hover { opacity: 0.9; }
+  .btn-submit:disabled { opacity: 0.4; cursor: default; }
+  .flash { padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+  .flash.error { background: rgba(255,77,106,0.15); color: var(--danger); }
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h1>&#x21BA; Reprocess Raw Files</h1>
+  <div class="subtitle">{{ files|length }} file{{ 's' if files|length != 1 else '' }} stored in raw archive &middot; select files to reprocess</div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if not files %}
+    <div class="empty-state">No raw files found &mdash; upload ECG files first.</div>
+  {% else %}
+  <form method="POST" action="{{ url_for('api_reprocess') }}" id="reprocessForm">
+    <div class="toolbar">
+      <button type="button" class="toolbar-btn" onclick="selectAll()">Select all</button>
+      <button type="button" class="toolbar-btn" onclick="selectNone()">Clear</button>
+      <button type="button" class="toolbar-btn" onclick="selectToday()">Today</button>
+      <button type="button" class="toolbar-btn" onclick="selectLast7()">Last 7 days</button>
+      <span class="selected-count" id="selCount">0 selected</span>
+    </div>
+
+    {% set ns = namespace(cur_date='') %}
+    {% for f in files %}
+      {% set day = f.ts.strftime('%Y-%m-%d') if f.ts else 'Unknown date' %}
+      {% if day != ns.cur_date %}
+        {% if ns.cur_date != '' %}</div>{% endif %}
+        {% set ns.cur_date = day %}
+        <div class="date-group">
+        <div class="date-header" onclick="toggleDay('{{ day }}')">
+          {{ f.ts.strftime('%A, %d %B %Y').replace(' 0', ' ') if f.ts else 'Unknown date' }}
+          <span class="sel-day" id="daysel-{{ day }}"></span>
+        </div>
+      {% endif %}
+      <label class="file-row">
+        <input type="checkbox" name="files" value="{{ f.name }}"
+               data-day="{{ day }}" data-ts="{{ f.ts.timestamp() if f.ts else 0 }}"
+               onchange="updateCount()">
+        <span class="file-name">{{ f.name }}</span>
+        <span class="file-time">{{ f.ts.strftime('%H:%M:%S') if f.ts else '' }}</span>
+        <span class="file-size">{{ f.size_kb }} KB</span>
+      </label>
+    {% endfor %}
+    </div>
+
+    <div class="submit-bar">
+      <button type="submit" class="btn-submit" id="submitBtn" disabled>Reprocess selected files</button>
+      <span id="submitLabel" style="font-size:13px;color:var(--text-dim)"></span>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function allCheckboxes() { return Array.from(document.querySelectorAll('input[type="checkbox"]')); }
+function updateCount() {
+  var checked = allCheckboxes().filter(c => c.checked);
+  var n = checked.length;
+  document.getElementById('selCount').textContent = n + ' selected';
+  document.getElementById('submitBtn').disabled = n === 0;
+  document.getElementById('submitLabel').textContent = n > 0 ? 'Will create a new analysis session' : '';
+  var byDay = {};
+  allCheckboxes().forEach(c => { byDay[c.dataset.day] = byDay[c.dataset.day] || {total:0,checked:0}; byDay[c.dataset.day].total++; if (c.checked) byDay[c.dataset.day].checked++; });
+  Object.entries(byDay).forEach(([day, counts]) => { var el = document.getElementById('daysel-'+day); if (el) el.textContent = counts.checked > 0 ? counts.checked+' / '+counts.total+' selected' : ''; });
+}
+function selectAll() { allCheckboxes().forEach(c => c.checked = true); updateCount(); }
+function selectNone() { allCheckboxes().forEach(c => c.checked = false); updateCount(); }
+function selectToday() { var midnight = new Date(); midnight.setHours(0,0,0,0); allCheckboxes().forEach(c => { c.checked = parseFloat(c.dataset.ts)*1000 >= midnight.getTime(); }); updateCount(); }
+function selectLast7() { var cutoff = Date.now()-7*86400000; allCheckboxes().forEach(c => { c.checked = parseFloat(c.dataset.ts)*1000 >= cutoff; }); updateCount(); }
+function toggleDay(day) { var boxes = allCheckboxes().filter(c => c.dataset.day === day); var anyUnchecked = boxes.some(c => !c.checked); boxes.forEach(c => c.checked = anyUnchecked); updateCount(); }
+updateCount();
+</script>
+{% endblock %}

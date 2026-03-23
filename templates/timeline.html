@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+{% block title %}Timeline — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+  .overall-stats { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; min-width: 130px; flex: 1; }
+  .stat-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 4px; }
+  .stat-card .value { font-size: 22px; font-weight: 700; }
+  .stat-card .unit { font-size: 13px; font-weight: 400; color: var(--text-dim); }
+  .stat-card.danger .value { color: var(--danger); }
+  .stat-card.warn .value { color: var(--warn); }
+  .stat-card.accent .value { color: var(--accent); }
+  .stat-card.ok .value { color: var(--ok); }
+  .type-breakdown { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
+  .type-chip { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; flex: 1; min-width: 120px; }
+  .type-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .type-chip .tc-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+  .type-chip .tc-count { font-size: 18px; font-weight: 700; margin-left: auto; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+  .section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+  .daily-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; width: 100%; cursor: pointer; }
+  .daily-bar { flex: 1; min-width: 3px; background: var(--danger); border-radius: 2px 2px 0 0; transition: background 0.15s, opacity 0.15s; }
+  .daily-bar:hover { opacity: 0.8; }
+  .daily-bar.selected { background: var(--accent); }
+  .daily-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); padding-top: 4px; }
+  .day-nav { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .day-nav button { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 16px; font-size: 14px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .day-nav button:hover { background: var(--border); border-color: var(--accent); }
+  .day-nav button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .day-nav .date-display { font-size: 18px; font-weight: 600; min-width: 220px; text-align: center; }
+  .day-nav input[type="date"] { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+  .day-nav input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
+  .day-stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .day-stats .stat-card { padding: 12px 16px; min-width: 110px; }
+  .day-stats .stat-card .value { font-size: 18px; }
+  .day-type-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .day-type-chip { display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px; }
+  .timeline-canvas-wrap { position: relative; width: 100%; height: 200px; }
+  .timeline-canvas-wrap canvas { display: block; width: 100%; height: 100%; }
+  .hour-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); padding: 4px 0 0 0; user-select: none; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .legend-swatch { width: 12px; height: 12px; border-radius: 3px; }
+  .heatmap-row { display: flex; gap: 2px; margin-bottom: 2px; }
+  .heatmap-cell { flex: 1; height: 22px; border-radius: 2px; cursor: pointer; transition: opacity 0.15s; }
+  .heatmap-cell:hover { opacity: 0.8; }
+  .heatmap-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); padding-top: 2px; }
+  .filter-row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .filter-row label { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
+  .filter-row select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .episode-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .episode-table th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .episode-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .episode-table tr:hover td { background: rgba(108,140,255,0.06); }
+  .type-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
+  .tooltip { display: none; position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.6; z-index: 1000; pointer-events: none; max-width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,.12); }
+  .tooltip.visible { display: block; }
+  .loading { text-align: center; color: var(--text-dim); padding: 40px 0; font-size: 14px; }
+  .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-state { text-align: center; color: var(--text-dim); padding: 30px 0; font-size: 13px; }
+{% endblock %}
+
+{% block content %}
+<h1>&#x1FAC0; Arrhythmia Timeline</h1>
+<div class="subtitle" id="subtitleText">Loading data&hellip;</div>
+
+<div class="overall-stats" id="overallStats">
+  <div class="loading"><div class="spinner"></div><br>Loading&hellip;</div>
+</div>
+
+<div class="type-breakdown" id="overallTypeBreakdown" style="display:none"></div>
+
+<div class="panel" id="dailyPanel" style="display:none">
+  <div class="section-title">Daily Episode Count <span id="dailyRange" style="font-weight:400;color:var(--text-dim);font-size:12px"></span></div>
+  <div class="daily-chart" id="dailyChart"></div>
+  <div class="daily-labels" id="dailyLabels"></div>
+</div>
+
+<div class="day-nav">
+  <button id="btnPrev">&#9664; Prev</button>
+  <div class="date-display" id="dateDisplay"></div>
+  <button id="btnNext">Next &#9654;</button>
+  <input type="date" id="datePicker">
+  <button id="btnLatest">Latest</button>
+</div>
+
+<div class="day-stats" id="dayStats"></div>
+<div class="day-type-chips" id="dayTypeChips"></div>
+
+<div class="panel">
+  <div class="section-title">24-Hour Timeline</div>
+  <div class="legend" id="timelineLegend">
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-bigeminy)"></div>Bigeminy</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-trigeminy)"></div>Trigeminy</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-couplet)"></div>Couplet</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-vtach)"></div>VTach</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--accent);border-radius:50%"></div>Heart Rate (BPM)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:rgba(68,221,136,0.25)"></div>Recording / Normal Sinus</div>
+  </div>
+  <div class="timeline-canvas-wrap">
+    <canvas id="timelineCanvas"></canvas>
+  </div>
+  <div class="hour-labels" id="hourLabels"></div>
+</div>
+
+<div class="panel">
+  <div class="section-title">Hourly Density (15-min buckets)</div>
+  <div id="heatmapContainer"></div>
+  <div class="heatmap-labels">
+    <span>00:00</span><span>03:00</span><span>06:00</span><span>09:00</span>
+    <span>12:00</span><span>15:00</span><span>18:00</span><span>21:00</span><span>00:00</span>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="section-title">Episodes <span id="episodeCount" style="font-weight:400;color:var(--text-dim);font-size:12px"></span></div>
+  <div class="filter-row">
+    <label>Type:
+      <select id="filterType">
+        <option value="">All</option>
+        <option value="bigeminy">Bigeminy</option>
+        <option value="trigeminy">Trigeminy</option>
+        <option value="couplet">Couplet</option>
+        <option value="vtach">VTach</option>
+      </select>
+    </label>
+    <label>Min duration:
+      <select id="filterDuration">
+        <option value="0">All</option>
+        <option value="5">&ge; 5s</option>
+        <option value="10">&ge; 10s</option>
+        <option value="30">&ge; 30s</option>
+        <option value="60">&ge; 1 min</option>
+        <option value="300">&ge; 5 min</option>
+      </select>
+    </label>
+    <label>Sort:
+      <select id="sortBy">
+        <option value="time">Time</option>
+        <option value="duration">Duration &darr;</option>
+        <option value="beats">Beats &darr;</option>
+        <option value="confidence">Confidence &darr;</option>
+      </select>
+    </label>
+  </div>
+  <div style="max-height:500px;overflow-y:auto">
+    <table class="episode-table">
+      <thead>
+        <tr><th>#</th><th>Type</th><th>Start</th><th>End</th><th>Duration</th><th>Beats</th><th>PVCs</th><th>Confidence</th></tr>
+      </thead>
+      <tbody id="episodeTableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TYPE_CFG = {
+  bigeminy:  { label: 'Bigeminy',  color: [255, 75,  106], css: 'var(--c-bigeminy)' },
+  trigeminy: { label: 'Trigeminy', color: [255, 176, 32],  css: 'var(--c-trigeminy)' },
+  couplet:   { label: 'Couplet',   color: [255, 130, 50],  css: 'var(--c-couplet)' },
+  vtach:     { label: 'VTach',     color: [180, 50,  255], css: 'var(--c-vtach)' },
+};
+function epRgb(type) { return (TYPE_CFG[type]||TYPE_CFG.bigeminy).color; }
+function epCss(type) { return (TYPE_CFG[type]||TYPE_CFG.bigeminy).css; }
+function epLabel(type) { return (TYPE_CFG[type]||TYPE_CFG.bigeminy).label; }
+function typeBadge(type) { const c=epCss(type); return `<span class="type-badge" style="background:rgba(${epRgb(type).join(',')},0.18);color:${c}">${epLabel(type)}</span>`; }
+
+let currentDate=null, dataRange=null, dailyData=[], episodes=[];
+let recordingSpans=[], hourlyHr=[];
+
+function fmtDate(d) { const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return days[d.getDay()]+' '+d.getDate()+' '+months[d.getMonth()]+' '+d.getFullYear(); }
+function fmtISO(d) { return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function fmtTime(s) { return new Date(s.replace(' ','T')).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function fmtDuration(sec) { if (sec<60) return sec.toFixed(1)+'s'; if (sec<3600) return Math.floor(sec/60)+'m '+Math.round(sec%60)+'s'; return Math.floor(sec/3600)+'h '+Math.floor((sec%3600)/60)+'m'; }
+function parseTS(s) { return new Date(s.replace(' ','T')).getTime(); }
+
+const tooltip=document.getElementById('tooltip');
+function showTip(evt,html) {
+  tooltip.innerHTML=html; tooltip.classList.add('visible');
+  var tx=evt.clientX+14,ty=evt.clientY-10;
+  var tr=tooltip.getBoundingClientRect();
+  if (tx+tr.width>window.innerWidth-10) tx=evt.clientX-tr.width-14;
+  tooltip.style.left=tx+'px'; tooltip.style.top=ty+'px';
+}
+function hideTip() { tooltip.classList.remove('visible'); }
+
+(async function init() {
+  document.getElementById('btnPrev').addEventListener('click', function() { navigate(-1); });
+  document.getElementById('btnNext').addEventListener('click', function() { navigate(1); });
+  document.getElementById('btnLatest').addEventListener('click', jumpToLatest);
+  document.getElementById('datePicker').addEventListener('change', function(e) { if (e.target.value) { var p=e.target.value.split('-'); currentDate=new Date(+p[0],+p[1]-1,+p[2]); fetchDay(); } });
+  document.getElementById('filterType').addEventListener('change', renderEpisodeTable);
+  document.getElementById('filterDuration').addEventListener('change', renderEpisodeTable);
+  document.getElementById('sortBy').addEventListener('change', renderEpisodeTable);
+  try {
+    var res=await fetch('/api/summary'); var data=await res.json();
+    dataRange=data.data_range; dailyData=data.daily||[];
+    renderOverallStats(data); renderDailyChart();
+    if (dataRange.max) {
+      var latest=new Date(dataRange.max.replace(' ','T'));
+      currentDate=new Date(latest.getFullYear(),latest.getMonth(),latest.getDate());
+      document.getElementById('subtitleText').textContent=dataRange.min.substring(0,10)+' \u2192 '+dataRange.max.substring(0,10)+' \u00B7 '+data.total_episodes.toLocaleString()+' episodes across '+dailyData.length+' days';
+    } else {
+      var now=new Date(); currentDate=new Date(now.getFullYear(),now.getMonth(),now.getDate()-1);
+      document.getElementById('subtitleText').textContent='No data yet \u2014 upload ECG files to begin';
+    }
+    fetchDay();
+  } catch(err) {
+    document.getElementById('overallStats').innerHTML='<div class="empty-state">Failed to load: '+err.message+'</div>';
+  }
+})();
+
+function navigate(delta) { currentDate=new Date(currentDate.getTime()+delta*86400000); fetchDay(); }
+function jumpToLatest() { if (dataRange&&dataRange.max) { var d=new Date(dataRange.max.replace(' ','T')); currentDate=new Date(d.getFullYear(),d.getMonth(),d.getDate()); fetchDay(); } }
+
+function renderOverallStats(data) {
+  var el=document.getElementById('overallStats');
+  if (data.total_episodes===0) { el.innerHTML='<div class="stat-card ok"><div class="label">Status</div><div class="value" style="font-size:16px">No data</div></div>'; return; }
+  var days=dailyData.length, avgPerDay=(data.total_episodes/Math.max(days,1)).toFixed(1);
+  el.innerHTML='<div class="stat-card accent"><div class="label">Data Span</div><div class="value" style="font-size:16px">'+days+' <span class="unit">days</span></div></div>'+
+    '<div class="stat-card warn"><div class="label">Total Episodes</div><div class="value">'+data.total_episodes.toLocaleString()+'</div></div>'+
+    '<div class="stat-card danger"><div class="label">Total Episode Time</div><div class="value">'+fmtDuration(data.total_bigeminy_seconds)+'</div></div>'+
+    '<div class="stat-card accent"><div class="label">Avg / Day</div><div class="value">'+avgPerDay+'</div></div>'+
+    '<div class="stat-card ok"><div class="label">Total Beats</div><div class="value">'+data.total_beats.toLocaleString()+'</div></div>'+
+    '<div class="stat-card danger"><div class="label">Total PVCs</div><div class="value">'+data.total_pvc.toLocaleString()+'</div></div>';
+}
+
+function renderDailyChart() {
+  var panel=document.getElementById('dailyPanel'),chart=document.getElementById('dailyChart');
+  var labels=document.getElementById('dailyLabels'),rangeEl=document.getElementById('dailyRange');
+  if (dailyData.length===0) { panel.style.display='none'; return; }
+  panel.style.display='block';
+  var maxEp=Math.max.apply(null,dailyData.map(function(d){return d.episodes;}).concat([1]));
+  rangeEl.textContent='('+dailyData[0].date+' \u2192 '+dailyData[dailyData.length-1].date+')';
+  chart.innerHTML='';
+  dailyData.forEach(function(d) {
+    var bar=document.createElement('div'); bar.className='daily-bar';
+    bar.style.height=Math.max((d.episodes/maxEp)*100,2)+'%';
+    bar.title=d.date+': '+d.episodes+' episodes';
+    bar.addEventListener('click',function(){var p=d.date.split('-');currentDate=new Date(+p[0],+p[1]-1,+p[2]);fetchDay();});
+    chart.appendChild(bar);
+  });
+  if (dailyData.length>0) { var mid=dailyData[Math.floor(dailyData.length/2)].date.substring(5); labels.innerHTML='<span>'+dailyData[0].date.substring(5)+'</span><span>'+mid+'</span><span>'+dailyData[dailyData.length-1].date.substring(5)+'</span>'; }
+}
+
+function highlightDailyBar() {
+  var bars=document.querySelectorAll('.daily-bar'),curISO=fmtISO(currentDate);
+  bars.forEach(function(bar,i){bar.classList.toggle('selected',dailyData[i]&&dailyData[i].date===curISO);});
+}
+
+function fetchDay() {
+  var start=fmtISO(currentDate)+' 00:00:00';
+  var next=new Date(currentDate.getTime()+86400000);
+  var end=fmtISO(next)+' 00:00:00';
+  document.getElementById('dateDisplay').textContent=fmtDate(currentDate);
+  document.getElementById('datePicker').value=fmtISO(currentDate);
+  highlightDailyBar();
+  var tomorrow=new Date(); tomorrow.setHours(0,0,0,0);
+  document.getElementById('btnNext').disabled=currentDate.getTime()>=tomorrow.getTime();
+  if (dataRange&&dataRange.min) { var earliest=new Date(dataRange.min.replace(' ','T')); earliest.setHours(0,0,0,0); document.getElementById('btnPrev').disabled=currentDate.getTime()<=earliest.getTime(); }
+  document.getElementById('dayStats').innerHTML='<div class="loading" style="padding:10px"><div class="spinner"></div></div>';
+  document.getElementById('dayTypeChips').innerHTML='';
+  var epUrl='/api/episodes?start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end);
+  var hrUrl='/api/hourly?start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end);
+  Promise.all([fetch(epUrl).then(function(r){return r.json();}),fetch(hrUrl).then(function(r){return r.json();})])
+    .then(function(results) {
+      var epData=results[0],hrData=results[1];
+      episodes=epData.episodes||[]; recordingSpans=hrData.recordings||[]; hourlyHr=hrData.hourly||[];
+      renderDayStats(epData.summary); renderDayTypeChips(); renderTimeline(); renderHeatmap(); renderEpisodeTable();
+    }).catch(function(err){document.getElementById('dayStats').innerHTML='<div class="empty-state">Error: '+err.message+'</div>';});
+}
+
+function renderDayStats(summary) {
+  var el=document.getElementById('dayStats');
+  if (!summary||summary.total_episodes===0) { el.innerHTML='<div class="stat-card ok" style="padding:12px 16px"><div class="label">Episodes</div><div class="value" style="font-size:18px">0</div></div>'; return; }
+  var longest=episodes.reduce(function(a,e){return Math.max(a,e.duration_seconds);},0);
+  el.innerHTML='<div class="stat-card warn"><div class="label">Episodes</div><div class="value" style="font-size:18px">'+summary.total_episodes+'</div></div>'+
+    '<div class="stat-card danger"><div class="label">Episode Time</div><div class="value" style="font-size:18px">'+fmtDuration(summary.total_bigeminy_seconds)+'</div></div>'+
+    '<div class="stat-card accent"><div class="label">Longest</div><div class="value" style="font-size:18px">'+fmtDuration(longest)+'</div></div>'+
+    '<div class="stat-card ok"><div class="label">Beats</div><div class="value" style="font-size:18px">'+summary.total_beats.toLocaleString()+'</div></div>'+
+    '<div class="stat-card danger"><div class="label">PVCs</div><div class="value" style="font-size:18px">'+summary.total_pvc.toLocaleString()+'</div></div>';
+}
+
+function renderDayTypeChips() {
+  var el=document.getElementById('dayTypeChips'); var counts={};
+  Object.keys(TYPE_CFG).forEach(function(t){counts[t]=0;});
+  episodes.forEach(function(ep){if(counts[ep.episode_type]!==undefined)counts[ep.episode_type]++;});
+  el.innerHTML=Object.entries(TYPE_CFG).map(function(entry){var type=entry[0],cfg=entry[1];return '<div class="day-type-chip"><div class="type-dot" style="background:'+cfg.css+'"></div><span style="color:var(--text-dim);font-size:11px">'+cfg.label+'</span><span style="font-weight:700;font-size:14px;margin-left:8px;color:'+cfg.css+'">'+counts[type]+'</span></div>';}).join('');
+}
+
+function renderTimeline() {
+  var canvas=document.getElementById('timelineCanvas');
+  var wrap=canvas.parentElement;
+  var dpr=window.devicePixelRatio||1;
+  var W=wrap.clientWidth,H=wrap.clientHeight;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  var ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr);
+  var HR_H=80,SEP=2,EP_TOP=HR_H+SEP+6,EP_H=H-EP_TOP-8;
+  ctx.fillStyle='#f8f9fc'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#e4e7f0'; ctx.lineWidth=1;
+  for (var h=0;h<=24;h++){var x=(h/24)*W;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  ctx.strokeStyle='#c8ccd8'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,HR_H+SEP); ctx.lineTo(W,HR_H+SEP); ctx.stroke();
+  var labelsDiv=document.getElementById('hourLabels'); labelsDiv.innerHTML='';
+  for (var h=0;h<=24;h+=3){var span=document.createElement('span');span.textContent=String(h).padStart(2,'0')+':00';labelsDiv.appendChild(span);}
+  var dayStart=currentDate.getTime();
+  recordingSpans.forEach(function(span){var s=new Date(span.rec_start.replace(' ','T')).getTime(),e=new Date(span.rec_end.replace(' ','T')).getTime();var x1=Math.max(0,((s-dayStart)/86400000)*W),x2=Math.min(W,((e-dayStart)/86400000)*W);if(x2>x1){ctx.fillStyle='rgba(22,163,74,0.07)';ctx.fillRect(x1,EP_TOP,x2-x1,EP_H);}});
+  ctx.font='11px sans-serif'; ctx.textAlign='center';
+  if (recordingSpans.length===0){ctx.fillStyle='#9ca3af';ctx.font='13px sans-serif';ctx.fillText('No recording data this day',W/2,EP_TOP+EP_H/2+4);}
+  else if (episodes.length===0){recordingSpans.forEach(function(span){var s=new Date(span.rec_start.replace(' ','T')).getTime(),e=new Date(span.rec_end.replace(' ','T')).getTime();var x1=Math.max(0,((s-dayStart)/86400000)*W),x2=Math.min(W,((e-dayStart)/86400000)*W);if(x2-x1>60){ctx.fillStyle='#16a34a';ctx.fillText('Normal sinus',(x1+x2)/2,EP_TOP+EP_H/2+4);}});}
+  episodes.forEach(function(ep){var s=parseTS(ep.start_time),e=parseTS(ep.end_time);var x1=Math.max(0,((s-dayStart)/86400000)*W),x2=Math.min(W,((e-dayStart)/86400000)*W);var w=Math.max(x2-x1,2);var rgb=epRgb(ep.episode_type||'bigeminy');var alpha=ep.duration_seconds<10?0.7:ep.duration_seconds<60?0.85:1.0;ctx.fillStyle='rgba('+rgb[0]+','+rgb[1]+','+rgb[2]+','+alpha+')';ctx.fillRect(x1,EP_TOP,w,EP_H);});
+  var HR_PAD_T=10,HR_PAD_B=10,hrTop=HR_PAD_T,hrBottom=HR_H-HR_PAD_B;
+  if (hourlyHr.length>0) {
+    var bpms=hourlyHr.map(function(h){return h.hr_bpm;}).filter(function(v){return v>0;});
+    var maxBpm=bpms.length?Math.max.apply(null,bpms):100,minBpm=bpms.length?Math.min.apply(null,bpms):40;
+    if (maxBpm-minBpm<20){var mid=(maxBpm+minBpm)/2;maxBpm=mid+10;minBpm=mid-10;}
+    maxBpm=Math.ceil(maxBpm/10)*10; minBpm=Math.max(0,Math.floor(minBpm/10)*10);
+    function hrToY(bpm){return hrBottom-((bpm-minBpm)/(maxBpm-minBpm))*(hrBottom-hrTop);}
+    ctx.beginPath(); var first=true;
+    hourlyHr.forEach(function(entry){if(entry.hr_bpm<=0)return;var t=new Date(entry.hour_start.replace(' ','T')).getTime();var x=((t-dayStart)/86400000)*W,y=hrToY(entry.hr_bpm);if(first){ctx.moveTo(x,y);first=false;}else{ctx.lineTo(x,y);}});
+    if (!first){var lastEntry=hourlyHr.filter(function(h){return h.hr_bpm>0;}).slice(-1)[0];var firstEntry=hourlyHr.filter(function(h){return h.hr_bpm>0;})[0];var lastX=((new Date(lastEntry.hour_start.replace(' ','T')).getTime()-dayStart)/86400000)*W;var firstX=((new Date(firstEntry.hour_start.replace(' ','T')).getTime()-dayStart)/86400000)*W;ctx.lineTo(lastX,hrBottom);ctx.lineTo(firstX,hrBottom);ctx.closePath();ctx.fillStyle='rgba(76,110,245,0.08)';ctx.fill();}
+    ctx.beginPath();ctx.strokeStyle='#4c6ef5';ctx.lineWidth=1.5;ctx.lineJoin='round';first=true;
+    hourlyHr.forEach(function(entry){if(entry.hr_bpm<=0){first=true;return;}var t=new Date(entry.hour_start.replace(' ','T')).getTime();var x=((t-dayStart)/86400000)*W,y=hrToY(entry.hr_bpm);if(first){ctx.moveTo(x,y);first=false;}else{ctx.lineTo(x,y);}});ctx.stroke();
+    ctx.fillStyle='#4c6ef5';hourlyHr.forEach(function(entry){if(entry.hr_bpm<=0)return;var t=new Date(entry.hour_start.replace(' ','T')).getTime();var x=((t-dayStart)/86400000)*W,y=hrToY(entry.hr_bpm);ctx.beginPath();ctx.arc(x,y,2.5,0,Math.PI*2);ctx.fill();});
+    ctx.fillStyle='#6b7280';ctx.font='10px sans-serif';ctx.textAlign='left';ctx.fillText('BPM',3,hrTop+10);ctx.textAlign='right';ctx.fillText(Math.round(maxBpm),W-3,hrTop+10);ctx.fillText(Math.round(minBpm),W-3,hrBottom-2);
+  } else {ctx.fillStyle='#9ca3af';ctx.font='11px sans-serif';ctx.textAlign='center';ctx.fillText('Heart rate data available after next upload',W/2,HR_H/2+4);}
+  canvas.onmousemove=function(evt){
+    var rect=canvas.getBoundingClientRect();var frac=(evt.clientX-rect.left)/rect.width;var hoverMs=dayStart+frac*86400000;
+    var hit=episodes.find(function(ep){return hoverMs>=parseTS(ep.start_time)&&hoverMs<=parseTS(ep.end_time);});
+    var hrHit=null;
+    if (hourlyHr.length>0){var nearest=null,nearestDist=Infinity;hourlyHr.forEach(function(entry){if(entry.hr_bpm<=0)return;var t=new Date(entry.hour_start.replace(' ','T')).getTime();var d=Math.abs(t-hoverMs);if(d<nearestDist&&d<1800000){nearestDist=d;nearest=entry;}});hrHit=nearest;}
+    var parts=[];
+    if (hit){parts.push('<strong style="color:'+epCss(hit.episode_type)+'">'+epLabel(hit.episode_type)+'</strong>');parts.push(fmtTime(hit.start_time)+' \u2192 '+fmtTime(hit.end_time));parts.push('Duration: <strong>'+fmtDuration(hit.duration_seconds)+'</strong>');parts.push('Beats: '+hit.total_beats+' ('+hit.pvc_beats+' PVCs)');parts.push('Confidence: '+(hit.avg_confidence*100).toFixed(1)+'%');}
+    if (hrHit){parts.push('<span style="color:#6c8cff">\u2665 '+hrHit.hr_bpm+' BPM</span>');}
+    if (!hit&&!hrHit){var t=new Date(hoverMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});parts.push('<span style="color:var(--text-dim)">'+t+'</span>');}
+    tooltip.innerHTML=parts.join('<br>'); tooltip.classList.add('visible');
+    var tx=evt.clientX+14,ty=evt.clientY-10;var tr=tooltip.getBoundingClientRect();if(tx+tr.width>window.innerWidth-10)tx=evt.clientX-tr.width-14;tooltip.style.left=tx+'px';tooltip.style.top=ty+'px';
+  };
+  canvas.onmouseleave=function(){tooltip.classList.remove('visible');};
+}
+
+function renderHeatmap() {
+  var container=document.getElementById('heatmapContainer');
+  if (episodes.length===0){container.innerHTML='<div class="empty-state">No episodes</div>';return;}
+  var dayStart=currentDate.getTime();var slots=new Array(96).fill(0),slotDur=new Array(96).fill(0);
+  episodes.forEach(function(ep){var s=parseTS(ep.start_time),e=parseTS(ep.end_time);var si=Math.max(0,Math.floor((s-dayStart)/900000)),ei=Math.min(95,Math.floor((e-dayStart)/900000));for(var i=si;i<=ei;i++){slots[i]++;slotDur[i]+=ep.duration_seconds/(ei-si+1);}});
+  var maxCount=Math.max.apply(null,slots.concat([1]));
+  var html='<div class="heatmap-row">';
+  for (var i=0;i<96;i++){var intensity=slots[i]/maxCount;var bg;if(slots[i]===0)bg='#1a1d27';else if(intensity<0.25)bg='rgba(255,107,107,0.3)';else if(intensity<0.5)bg='rgba(255,107,107,0.5)';else if(intensity<0.75)bg='rgba(255,71,87,0.7)';else bg='rgba(255,23,68,0.9)';var h=Math.floor(i/4),m=(i%4)*15;var lbl=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' \u2014 '+slots[i]+' ep, '+fmtDuration(slotDur[i]);var cnt=slots[i]>0?slots[i]:'';html+='<div class="heatmap-cell" style="background:'+bg+'" title="'+lbl+'">'+(cnt?'<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:9px;color:rgba(255,255,255,0.7)">'+cnt+'</div>':'')+'</div>';}
+  html+='</div>'; container.innerHTML=html;
+}
+
+function renderEpisodeTable() {
+  var tbody=document.getElementById('episodeTableBody'),countEl=document.getElementById('episodeCount');
+  var typeFilter=document.getElementById('filterType').value,minDur=parseFloat(document.getElementById('filterDuration').value)||0,sortKey=document.getElementById('sortBy').value;
+  var filtered=episodes.filter(function(e){return e.duration_seconds>=minDur&&(!typeFilter||e.episode_type===typeFilter);});
+  if (sortKey==='duration') filtered.sort(function(a,b){return b.duration_seconds-a.duration_seconds;});
+  else if (sortKey==='beats') filtered.sort(function(a,b){return b.total_beats-a.total_beats;});
+  else if (sortKey==='confidence') filtered.sort(function(a,b){return b.avg_confidence-a.avg_confidence;});
+  else filtered.sort(function(a,b){return parseTS(a.start_time)-parseTS(b.start_time);});
+  countEl.textContent=filtered.length!==episodes.length?'('+filtered.length+' of '+episodes.length+')':'('+episodes.length+')';
+  if (filtered.length===0){tbody.innerHTML='<tr><td colspan="8" class="empty-state">No episodes</td></tr>';return;}
+  tbody.innerHTML=filtered.map(function(ep,i){return '<tr><td>'+( i+1)+'</td><td>'+typeBadge(ep.episode_type||'bigeminy')+'</td><td>'+fmtTime(ep.start_time)+'</td><td>'+fmtTime(ep.end_time)+'</td><td style="color:'+epCss(ep.episode_type)+';font-weight:600">'+fmtDuration(ep.duration_seconds)+'</td><td>'+ep.total_beats+'</td><td>'+ep.pvc_beats+'</td><td>'+(ep.avg_confidence*100).toFixed(1)+'%</td></tr>';}).join('');
+}
+
+window.addEventListener('resize', function() { renderTimeline(); });
+</script>
+{% endblock %}

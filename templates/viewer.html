@@ -1,0 +1,569 @@
+{% extends "base.html" %}
+{% block title %}ECG Viewer — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 20px; }
+
+  /* ── Controls bar ── */
+  .controls-bar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 18px; margin-bottom: 14px;
+  }
+  .controls-bar label { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 4px; }
+  .dt-input {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit;
+  }
+  .dt-input::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+  .btn {
+    border: none; border-radius: 6px; padding: 8px 18px; font-size: 13px;
+    font-weight: 600; cursor: pointer; transition: opacity 0.15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: 0.85; }
+  .btn-nav {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 14px; font-size: 13px;
+    cursor: pointer; transition: background 0.15s;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .btn-nav:hover { background: var(--border); }
+  .btn-nav:disabled { opacity: 0.4; cursor: default; }
+
+  /* ── Navigation bar ── */
+  .nav-bar {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 14px;
+  }
+  .time-display {
+    flex: 1; text-align: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 16px;
+  }
+  .time-center {
+    font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;
+    letter-spacing: -0.3px;
+  }
+  .time-range-label {
+    font-size: 11px; color: var(--text-dim); margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── ECG Panel ── */
+  .ecg-panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0; overflow: hidden; position: relative;
+    margin-bottom: 16px;
+  }
+  #ecgCanvas {
+    display: block; width: 100%;
+    cursor: crosshair;
+  }
+  .ecg-overlay {
+    position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .ecg-msg {
+    background: rgba(255,255,255,0.92); border: 1px solid var(--border);
+    border-radius: 8px; padding: 18px 28px; font-size: 14px;
+    color: var(--text-dim); text-align: center;
+  }
+  .spinner {
+    display: inline-block; width: 20px; height: 20px;
+    border: 3px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    margin-right: 8px; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Hover tooltip ── */
+  .hover-tip {
+    display: none; position: fixed; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font-size: 11px; line-height: 1.6;
+    pointer-events: none; z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    font-variant-numeric: tabular-nums;
+  }
+  .hover-tip.visible { display: block; }
+
+  /* ── Episode legend ── */
+  .legend {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-dim);
+    padding: 10px 18px; border-top: 1px solid var(--border);
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; opacity: 0.6; }
+
+  /* ── Keyboard hint ── */
+  .kbd-hint {
+    font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 4px;
+  }
+  kbd {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+    padding: 1px 5px; font-size: 10px; font-family: inherit;
+  }
+{% endblock %}
+
+{% block content %}
+<h1>ECG Viewer</h1>
+<div class="subtitle">Inspect the raw ECG trace for any recorded time period.</div>
+
+<!-- Time picker -->
+<div class="controls-bar">
+  <label>
+    Jump to time
+    <input type="datetime-local" id="centerInput" class="dt-input" step="1">
+  </label>
+  <div style="align-self:flex-end">
+    <button class="btn btn-primary" onclick="goToTime()">Go</button>
+  </div>
+  <div style="margin-left:auto; font-size:12px; color:var(--text-dim)">
+    Window: 60 s before &amp; after
+  </div>
+</div>
+
+<!-- Navigation -->
+<div class="nav-bar">
+  <button class="btn-nav" id="btnBack" onclick="step(-60)" disabled>&#x2190; 60 s</button>
+  <button class="btn-nav" id="btnBack10" onclick="step(-10)" disabled>&#x2190; 10 s</button>
+  <div class="time-display">
+    <div class="time-center" id="timeCenter">—</div>
+    <div class="time-range-label" id="timeRange">Select a time to begin</div>
+  </div>
+  <button class="btn-nav" id="btnFwd10" onclick="step(10)" disabled>10 s &#x2192;</button>
+  <button class="btn-nav" id="btnFwd" onclick="step(60)" disabled>60 s &#x2192;</button>
+</div>
+
+<!-- ECG chart -->
+<div class="ecg-panel" id="ecgPanel">
+  <canvas id="ecgCanvas" height="320"></canvas>
+  <div class="ecg-overlay" id="ecgOverlay">
+    <div class="ecg-msg" id="ecgMsg">
+      Enter a timestamp above and click <strong>Go</strong> to view the ECG trace.
+    </div>
+  </div>
+
+  <!-- Episode colour legend (shown inside the panel) -->
+  <div class="legend" id="episodeLegend" style="display:none">
+    <span class="legend-item"><span class="legend-swatch" style="background:#dc2626"></span> Bigeminy</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:#9333ea"></span> VTach</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:#d97706"></span> Trigeminy</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:#ea580c"></span> Couplet</span>
+  </div>
+</div>
+
+<div class="kbd-hint">
+  <kbd>&#x2190;</kbd> / <kbd>&#x2192;</kbd> navigate 10 s &nbsp;&nbsp;
+  <kbd>Shift</kbd>+<kbd>&#x2190;</kbd> / <kbd>&#x2192;</kbd> navigate 60 s
+</div>
+
+<div class="hover-tip" id="hoverTip"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const WINDOW_SEC  = 120;   // total window (60 s either side of centre)
+const SAMPLE_RATE = 125;
+
+// ECG paper colours
+const COL_BG        = '#fffaf9';
+const COL_GRID_MIN  = '#fce4e4';   // minor grid (1 s)
+const COL_GRID_MAJ  = '#f09090';   // major grid (5 s)
+const COL_TRACE     = '#b91c1c';   // ECG waveform
+const COL_CENTER    = 'rgba(59,130,246,0.7)';  // centre-time marker
+const COL_NO_DATA   = 'rgba(200,200,210,0.25)';
+const COL_EP = {
+  bigeminy: 'rgba(220,38,38,0.18)',
+  vtach:    'rgba(147,51,234,0.18)',
+  trigeminy:'rgba(217,119,6,0.18)',
+  couplet:  'rgba(234,88,12,0.18)',
+};
+
+// ── State ────────────────────────────────────────────────────────────────────
+let centerMs   = null;
+let lastData   = null;
+let lastEps    = [];
+let loading    = false;
+
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const canvas      = document.getElementById('ecgCanvas');
+const ctx         = canvas.getContext('2d');
+const overlay     = document.getElementById('ecgOverlay');
+const ecgMsg      = document.getElementById('ecgMsg');
+const timeCenter  = document.getElementById('timeCenter');
+const timeRange   = document.getElementById('timeRange');
+const centerInput = document.getElementById('centerInput');
+const hoverTip    = document.getElementById('hoverTip');
+const legend      = document.getElementById('episodeLegend');
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function fmtMs(ms, showDate) {
+  const d = new Date(ms);
+  const date = `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  return showDate ? `${date} ${time}` : time;
+}
+
+function fmtIso(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`
+       + `T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function isInDataRange(ms, ranges) {
+  for (const [s, e] of ranges) {
+    if (ms >= s && ms < e) return true;
+  }
+  return false;
+}
+
+function navButtonsDisabled(val) {
+  ['btnBack','btnBack10','btnFwd10','btnFwd'].forEach(id => {
+    document.getElementById(id).disabled = val;
+  });
+}
+
+// ── Canvas sizing ─────────────────────────────────────────────────────────────
+const PLOT_H    = 280;   // px, plot area height
+const AXIS_H    = 32;    // px, x-axis label area
+const CANVAS_H  = PLOT_H + AXIS_H;
+const PAD_LEFT  = 8;
+const PAD_RIGHT = 8;
+
+let dpr = 1;
+
+function resizeCanvas() {
+  dpr = window.devicePixelRatio || 1;
+  const w = canvas.parentElement.clientWidth;
+  canvas.style.width  = w + 'px';
+  canvas.style.height = CANVAS_H + 'px';
+  canvas.width  = Math.round(w * dpr);
+  canvas.height = Math.round(CANVAS_H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (lastData) renderChart(lastData, lastEps);
+}
+
+window.addEventListener('resize', resizeCanvas);
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+function renderChart(data, episodes) {
+  const W = canvas.clientWidth;
+  const plotW = W - PAD_LEFT - PAD_RIGHT;
+
+  ctx.clearRect(0, 0, W, CANVAS_H);
+
+  const samples    = data.samples;
+  const startMs    = data.start_ms;
+  const sr         = data.sample_rate;
+  const ranges     = data.data_ranges;
+  const nSamples   = samples.length;
+  const intervalMs = 1000 / sr;
+
+  // ── Auto-scale Y (within data regions only) ──
+  let yMin = Infinity, yMax = -Infinity;
+  for (let i = 0; i < nSamples; i++) {
+    const ms = startMs + i * intervalMs;
+    if (!isInDataRange(ms, ranges)) continue;
+    if (samples[i] < yMin) yMin = samples[i];
+    if (samples[i] > yMax) yMax = samples[i];
+  }
+  if (!isFinite(yMin)) { yMin = -512; yMax = 512; }
+  const yPad = Math.max((yMax - yMin) * 0.12, 50);
+  yMin -= yPad; yMax += yPad;
+  const yRange = yMax - yMin;
+
+  const yOf  = v  => PLOT_H - (v - yMin) / yRange * PLOT_H;
+  const xOf  = ms => PAD_LEFT + (ms - startMs) / (nSamples * intervalMs) * plotW;
+  const sOfX = px => Math.floor((px - PAD_LEFT) / plotW * nSamples);
+
+  // ── ECG paper background ──
+  ctx.fillStyle = COL_BG;
+  ctx.fillRect(PAD_LEFT, 0, plotW, PLOT_H);
+
+  // ── No-data shading ──
+  ctx.fillStyle = COL_NO_DATA;
+  // Shade gaps between data_ranges
+  let prevEnd = startMs;
+  const totalEndMs = startMs + nSamples * intervalMs;
+  for (const [rs, re] of ranges) {
+    if (rs > prevEnd) {
+      ctx.fillRect(xOf(prevEnd), 0, xOf(rs) - xOf(prevEnd), PLOT_H);
+    }
+    prevEnd = re;
+  }
+  if (prevEnd < totalEndMs) {
+    ctx.fillRect(xOf(prevEnd), 0, xOf(totalEndMs) - xOf(prevEnd), PLOT_H);
+  }
+
+  // ── Episode bands ──
+  for (const ep of episodes) {
+    const col = COL_EP[ep.episode_type] || 'rgba(100,100,200,0.15)';
+    const epStartMs = new Date(ep.start_time.replace(' ', 'T')).getTime();
+    const epEndMs   = new Date(ep.end_time.replace(' ', 'T')).getTime();
+    const x1 = Math.max(PAD_LEFT, xOf(epStartMs));
+    const x2 = Math.min(PAD_LEFT + plotW, xOf(epEndMs));
+    if (x2 > x1) {
+      ctx.fillStyle = col;
+      ctx.fillRect(x1, 0, x2 - x1, PLOT_H);
+      // Episode type label at top
+      ctx.fillStyle = col.replace('0.18', '0.9');
+      ctx.font = '9px system-ui';
+      ctx.fillText(ep.episode_type, x1 + 3, 11);
+    }
+  }
+
+  // ── Minor grid (every 1 s) ──
+  ctx.strokeStyle = COL_GRID_MIN;
+  ctx.lineWidth   = 0.5;
+  const windowMs = nSamples * intervalMs;
+  const gridStep1s = 1000;
+  const firstGrid1s = Math.ceil(startMs / gridStep1s) * gridStep1s;
+  ctx.beginPath();
+  for (let t = firstGrid1s; t < startMs + windowMs; t += gridStep1s) {
+    const x = xOf(t);
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, PLOT_H);
+  }
+  ctx.stroke();
+
+  // ── Major grid (every 5 s) + x-axis labels ──
+  ctx.strokeStyle = COL_GRID_MAJ;
+  ctx.lineWidth   = 0.8;
+  ctx.fillStyle   = '#888';
+  ctx.font        = `11px 'Segoe UI', system-ui`;
+  ctx.textAlign   = 'center';
+  ctx.textBaseline = 'top';
+  const gridStep5s = 5000;
+  const firstGrid5s = Math.ceil(startMs / gridStep5s) * gridStep5s;
+  ctx.beginPath();
+  for (let t = firstGrid5s; t <= startMs + windowMs; t += gridStep5s) {
+    const x = xOf(t);
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, PLOT_H);
+  }
+  ctx.stroke();
+
+  // x-axis label strip
+  ctx.fillStyle = COL_BG;
+  ctx.fillRect(PAD_LEFT, PLOT_H, plotW, AXIS_H);
+  ctx.fillStyle = '#555';
+  for (let t = firstGrid5s; t <= startMs + windowMs; t += gridStep5s) {
+    const x = xOf(t);
+    const label = fmtMs(t, false);
+    // Avoid drawing outside the plot area
+    if (x < PAD_LEFT + 20 || x > PAD_LEFT + plotW - 20) continue;
+    ctx.fillText(label, x, PLOT_H + 6);
+  }
+
+  // ── Centre-time marker ──
+  const centerX = PAD_LEFT + plotW / 2;
+  ctx.strokeStyle = COL_CENTER;
+  ctx.lineWidth   = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(centerX, 0);
+  ctx.lineTo(centerX, PLOT_H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // ── ECG trace ──
+  ctx.strokeStyle = COL_TRACE;
+  ctx.lineWidth   = 1.2;
+  ctx.lineJoin    = 'round';
+  ctx.beginPath();
+  let penDown = false;
+
+  for (let px = 0; px < plotW; px++) {
+    const sIdx = sOfX(PAD_LEFT + px + 0.5);
+    if (sIdx < 0 || sIdx >= nSamples) { penDown = false; continue; }
+
+    // Min/max over this pixel column
+    const sLo = Math.max(0,         Math.floor(px       * nSamples / plotW));
+    const sHi = Math.min(nSamples,  Math.ceil((px + 1)  * nSamples / plotW));
+
+    // Check data coverage (centre of range)
+    const midMs = startMs + ((sLo + sHi) / 2) * intervalMs;
+    if (!isInDataRange(midMs, ranges)) { penDown = false; continue; }
+
+    let lo = Infinity, hi = -Infinity;
+    for (let s = sLo; s < sHi; s++) {
+      if (samples[s] < lo) lo = samples[s];
+      if (samples[s] > hi) hi = samples[s];
+    }
+
+    const x   = PAD_LEFT + px + 0.5;
+    const yLo = yOf(lo);
+    const yHi = yOf(hi);
+    const yMid = (yLo + yHi) / 2;
+
+    if (!penDown) {
+      ctx.moveTo(x, yMid);
+      penDown = true;
+    } else {
+      // Connect to this column's midpoint, then extend to min/max extent
+      ctx.lineTo(x, yMid);
+      if (yLo !== yHi) {
+        ctx.lineTo(x, yLo);
+        ctx.lineTo(x, yHi);
+        ctx.lineTo(x, yMid);
+      }
+    }
+  }
+  ctx.stroke();
+
+  // ── Border ──
+  ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(PAD_LEFT, 0, plotW, PLOT_H);
+
+  // Store scale info for hover
+  canvas._chartInfo = { startMs, nSamples, intervalMs, plotW, yMin, yMax, yRange, samples, ranges, sr };
+}
+
+// ── Hover crosshair / tooltip ─────────────────────────────────────────────────
+canvas.addEventListener('mousemove', function(e) {
+  if (!canvas._chartInfo) return;
+  const { startMs, nSamples, intervalMs, plotW, yMin, yRange, samples, ranges, sr } = canvas._chartInfo;
+  const rect = canvas.getBoundingClientRect();
+  const px   = e.clientX - rect.left - PAD_LEFT;
+  if (px < 0 || px > plotW) { hoverTip.classList.remove('visible'); return; }
+
+  const frac  = px / plotW;
+  const sIdx  = Math.round(frac * nSamples);
+  const ms    = startMs + sIdx * intervalMs;
+  const inData = isInDataRange(ms, ranges);
+  const val   = inData ? samples[Math.min(sIdx, nSamples-1)] : null;
+
+  hoverTip.classList.add('visible');
+  hoverTip.style.left = (e.clientX + 14) + 'px';
+  hoverTip.style.top  = (e.clientY - 12) + 'px';
+  hoverTip.innerHTML  = `<strong>${fmtMs(ms, true)}</strong><br>`
+    + (val !== null ? `Value: ${val}` : '<em>No recording</em>');
+});
+canvas.addEventListener('mouseleave', () => hoverTip.classList.remove('visible'));
+
+// ── Click to re-centre ────────────────────────────────────────────────────────
+canvas.addEventListener('click', function(e) {
+  if (!canvas._chartInfo) return;
+  const { startMs, nSamples, intervalMs, plotW } = canvas._chartInfo;
+  const rect = canvas.getBoundingClientRect();
+  const px   = e.clientX - rect.left - PAD_LEFT;
+  if (px < 0 || px > plotW) return;
+  const ms = startMs + (px / plotW) * nSamples * intervalMs;
+  loadECG(ms);
+});
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+function showOverlay(html) {
+  ecgMsg.innerHTML = html;
+  overlay.style.display = 'flex';
+}
+function hideOverlay() {
+  overlay.style.display = 'none';
+}
+
+async function loadECG(ms) {
+  if (loading) return;
+  loading = true;
+  centerMs = ms;
+  navButtonsDisabled(true);
+
+  // Update header displays
+  const centerStr = fmtMs(ms, true);
+  const halfMs    = WINDOW_SEC / 2 * 1000;
+  timeCenter.textContent = centerStr;
+  timeRange.textContent  = fmtMs(ms - halfMs, false) + ' – ' + fmtMs(ms + halfMs, false);
+
+  // Sync the datetime input
+  centerInput.value = fmtIso(ms);
+
+  // Update URL without navigation
+  history.replaceState(null, '', '?t=' + encodeURIComponent(fmtIso(ms)));
+
+  showOverlay('<span class="spinner"></span> Loading ECG data&hellip;');
+
+  try {
+    const isoCenter = fmtIso(ms);
+
+    // Fetch ECG samples and episodes in parallel
+    const [ecgResp, epResp] = await Promise.all([
+      fetch(`/api/ecg_raw?center=${encodeURIComponent(isoCenter)}&window=${WINDOW_SEC}`),
+      fetch(`/api/episodes?start=${encodeURIComponent(fmtIso(ms - halfMs))}&end=${encodeURIComponent(fmtIso(ms + halfMs))}`),
+    ]);
+
+    if (!ecgResp.ok) throw new Error(`ECG API error ${ecgResp.status}`);
+    const data = await ecgResp.json();
+    if (data.error) throw new Error(data.error);
+
+    lastData = data;
+    lastEps  = epResp.ok ? (await epResp.json()).episodes || [] : [];
+
+    // Show/hide legend
+    legend.style.display = lastEps.length ? 'flex' : 'none';
+
+    if (!data.data_ranges || data.data_ranges.length === 0) {
+      showOverlay('No recording data for this time period.');
+    } else {
+      hideOverlay();
+      resizeCanvas();   // also calls renderChart
+    }
+
+  } catch(err) {
+    showOverlay(`<span style="color:var(--danger)">Error: ${err.message}</span>`);
+  } finally {
+    loading = false;
+    navButtonsDisabled(false);
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function goToTime() {
+  const val = centerInput.value;
+  if (!val) return;
+  const ms = new Date(val).getTime();
+  if (isNaN(ms)) return;
+  loadECG(ms);
+}
+
+function step(seconds) {
+  if (centerMs === null) return;
+  loadECG(centerMs + seconds * 1000);
+}
+
+// ── Keyboard navigation ───────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (document.activeElement === centerInput) return;
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); step(e.shiftKey ? -60 : -10); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); step(e.shiftKey ?  60 :  10); }
+});
+
+// ── Init from URL param ───────────────────────────────────────────────────────
+(function init() {
+  resizeCanvas();
+  const params = new URLSearchParams(window.location.search);
+  const t = params.get('t');
+  if (t) {
+    const ms = new Date(t).getTime();
+    if (!isNaN(ms)) {
+      loadECG(ms);
+      return;
+    }
+  }
+  // Pre-fill input with timestamp of most recent episode data
+  fetch('/api/summary').then(r => r.json()).then(d => {
+    if (d.data_range && d.data_range.max) {
+      const ms = new Date(d.data_range.max.replace(' ', 'T')).getTime();
+      centerInput.value = fmtIso(ms);
+    }
+  }).catch(() => {});
+})();
+</script>
+{% endblock %}

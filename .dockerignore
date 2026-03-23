@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+uploads/
+import/
+bigeminy_report.json
+bigeminy_timeline.html
+decode_ecg.py
+analyse_bigeminy.py
+.git/
+.gitignore
+*.md

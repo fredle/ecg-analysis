@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block title %}Results — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+  .stats-row { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; min-width: 150px; flex: 1; }
+  .stat-card .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .stat-card .value { font-size: 24px; font-weight: 700; }
+  .stat-card .unit { font-size: 13px; color: var(--text-dim); font-weight: 400; }
+  .stat-card.danger .value { color: var(--danger); }
+  .stat-card.warn .value { color: var(--warn); }
+  .stat-card.ok .value { color: var(--ok); }
+  .stat-card.accent .value { color: var(--accent); }
+  .stat-card.purple .value { color: var(--c-vtach); }
+  .type-breakdown { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+  .type-chip { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; flex: 1; min-width: 130px; }
+  .type-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .type-chip .tc-label { font-size: 12px; color: var(--text-dim); }
+  .type-chip .tc-count { font-size: 20px; font-weight: 700; margin-left: auto; }
+  .section-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; margin-top: 8px; }
+  .hourly-chart { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+  .hourly-bars { display: flex; align-items: flex-end; gap: 4px; height: 160px; padding-top: 10px; position: relative; }
+  .hourly-bar-group { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+  .hourly-bar { width: 100%; max-width: 48px; border-radius: 4px 4px 0 0; min-height: 2px; transition: opacity 0.2s; cursor: pointer; }
+  .hourly-bar:hover { opacity: 0.85; }
+  .hourly-bar-label { font-size: 10px; color: var(--text-dim); margin-top: 6px; white-space: nowrap; }
+  .hourly-bar-value { font-size: 10px; color: var(--text); margin-bottom: 3px; font-weight: 600; }
+  .timeline-container { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  .timeline-track { position: relative; height: 60px; background: #edf0f8; border-radius: 6px; margin: 10px 0 6px 0; overflow: hidden; }
+  .timeline-episode { position: absolute; top: 0; height: 100%; min-width: 1px; cursor: pointer; transition: filter 0.15s; border-radius: 1px; }
+  .timeline-episode:hover { filter: brightness(1.4); z-index: 10; }
+  .timeline-hours { display: flex; justify-content: space-between; position: relative; height: 20px; }
+  .timeline-hour-mark { font-size: 11px; color: var(--text-dim); text-align: center; position: absolute; transform: translateX(-50%); }
+  .recording-label { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .recording-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .recording-dot.rec2 { background: var(--danger); }
+  .recording-name { font-size: 13px; font-weight: 600; }
+  .recording-time { font-size: 12px; color: var(--text-dim); }
+  .tooltip { display: none; position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-size: 12px; z-index: 1000; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.12); max-width: 300px; }
+  .tooltip.visible { display: block; }
+  .tooltip .tt-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+  .tooltip .tt-row { display: flex; justify-content: space-between; gap: 20px; margin: 2px 0; }
+  .tooltip .tt-label { color: var(--text-dim); }
+  .tooltip .tt-val { font-weight: 600; }
+  .heatmap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+  .heatmap-row { display: flex; align-items: center; margin: 2px 0; }
+  .heatmap-label { width: 50px; font-size: 11px; color: var(--text-dim); text-align: right; padding-right: 10px; flex-shrink: 0; }
+  .heatmap-cells { display: flex; flex: 1; gap: 1px; }
+  .heatmap-cell { flex: 1; height: 22px; border-radius: 2px; cursor: pointer; transition: transform 0.1s; }
+  .heatmap-cell:hover { transform: scaleY(1.3); z-index: 5; }
+  .heatmap-minute-labels { display: flex; margin-left: 50px; margin-top: 4px; }
+  .heatmap-minute-labels span { flex: 1; font-size: 10px; color: var(--text-dim); text-align: center; }
+  .legend { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+  .episode-list { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+  .episode-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .episode-table th { text-align: left; color: var(--text-dim); font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .episode-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .episode-table tr:hover td { background: rgba(108,140,255,0.06); }
+  .duration-bar { height: 6px; border-radius: 3px; display: inline-block; vertical-align: middle; margin-right: 6px; opacity: 0.8; }
+  .type-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
+  .filter-controls { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+  .filter-controls label { font-size: 12px; color: var(--text-dim); }
+  .filter-controls select, .filter-controls input { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 12px; }
+  .tab-bar { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tab { padding: 8px 18px; border-radius: 8px 8px 0 0; font-size: 13px; cursor: pointer; background: transparent; border: 1px solid transparent; color: var(--text-dim); transition: all 0.2s; }
+  .tab.active { background: var(--surface); border-color: var(--border); border-bottom-color: var(--surface); color: var(--text); font-weight: 600; }
+  .tab:hover:not(.active) { color: var(--text); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .no-episodes { text-align: center; padding: 48px 24px; color: var(--text-dim); font-size: 16px; }
+{% endblock %}
+
+{% block content %}
+<h1>&#x1FAC0; ECG Arrhythmia Episode Timeline</h1>
+<div class="subtitle">HeartKit BEAT-3-EFF-SM &middot; {{ earliest[:16] }} &rarr; {{ latest[:16] }}</div>
+
+<div class="stats-row" id="statsRow"></div>
+<div class="type-breakdown" id="typeBreakdown"></div>
+
+<div class="tab-bar" id="tabBar">
+  <div class="tab active" data-tab="timeline">Timeline</div>
+  <div class="tab" data-tab="heatmap">Density Heatmap</div>
+  <div class="tab" data-tab="hourly">Hourly Burden</div>
+  <div class="tab" data-tab="episodes">Episode List</div>
+</div>
+
+<div class="tab-content active" id="tab-timeline">
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-bigeminy)"></div>Bigeminy</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-trigeminy)"></div>Trigeminy</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-couplet)"></div>Couplet</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--c-vtach)"></div>VTach</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:rgba(108,140,255,0.15)"></div>No events</div>
+  </div>
+  <div id="timelineArea"></div>
+</div>
+
+<div class="tab-content" id="tab-heatmap">
+  <div class="heatmap" id="heatmapArea">
+    <div class="section-title">Episode Density &mdash; % of each 5-minute window with arrhythmia</div>
+    <div class="legend" style="margin-top:8px">
+      <div class="legend-item"><div class="legend-swatch" style="background:#f4f6fa"></div>0%</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#f9a8a8"></div>25%</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#f05050"></div>50%</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#dc2626"></div>75%+</div>
+    </div>
+    <div id="heatmapGrid" style="margin-top:12px"></div>
+  </div>
+</div>
+
+<div class="tab-content" id="tab-hourly">
+  <div class="hourly-chart">
+    <div class="section-title">Hourly PVC Burden &amp; Episode Time</div>
+    <div id="hourlyChart"></div>
+  </div>
+</div>
+
+<div class="tab-content" id="tab-episodes">
+  <div class="episode-list">
+    <div class="section-title">All Episodes</div>
+    <div class="filter-controls">
+      <label>Type:
+        <select id="filterType">
+          <option value="">All</option>
+          <option value="bigeminy">Bigeminy</option>
+          <option value="trigeminy">Trigeminy</option>
+          <option value="couplet">Couplet</option>
+          <option value="vtach">VTach</option>
+        </select>
+      </label>
+      <label>Min duration:
+        <select id="filterDuration">
+          <option value="0">All</option>
+          <option value="10">&ge; 10s</option>
+          <option value="30">&ge; 30s</option>
+          <option value="60">&ge; 1 min</option>
+          <option value="120">&ge; 2 min</option>
+          <option value="300">&ge; 5 min</option>
+        </select>
+      </label>
+      <label>Sort by:
+        <select id="sortBy">
+          <option value="time">Time</option>
+          <option value="duration">Duration (longest)</option>
+          <option value="beats">Beat count</option>
+          <option value="confidence">Confidence</option>
+        </select>
+      </label>
+      <span id="episodeCount" style="font-size:12px;color:var(--text-dim)"></span>
+    </div>
+    <div style="max-height:500px;overflow-y:auto">
+      <table class="episode-table">
+        <thead>
+          <tr><th>#</th><th>Type</th><th>Start</th><th>End</th><th>Duration</th><th>Beats</th><th>PVCs</th><th>Confidence</th></tr>
+        </thead>
+        <tbody id="episodeTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const reportData = {{ report_json | safe }};
+const TYPE_CFG = {
+  bigeminy:  { label: 'Bigeminy',  color: [255, 75,  106], cssVar: 'var(--c-bigeminy)' },
+  trigeminy: { label: 'Trigeminy', color: [255, 176, 32],  cssVar: 'var(--c-trigeminy)' },
+  couplet:   { label: 'Couplet',   color: [255, 130, 50],  cssVar: 'var(--c-couplet)' },
+  vtach:     { label: 'VTach',     color: [180, 50,  255], cssVar: 'var(--c-vtach)' },
+};
+function epColor(type, alpha = 1) { const c = (TYPE_CFG[type]||TYPE_CFG.bigeminy).color; return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`; }
+function epCssVar(type) { return (TYPE_CFG[type]||TYPE_CFG.bigeminy).cssVar; }
+function typeBadgeHtml(type) { const cfg = TYPE_CFG[type]||TYPE_CFG.bigeminy; return `<span class="type-badge" style="background:${epColor(type,0.18)};color:${cfg.cssVar}">${cfg.label}</span>`; }
+function fmtTime(s) { return new Date(s.replace(' ','T')).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); }
+function fmtTimeSec(s) { return new Date(s.replace(' ','T')).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function fmtDuration(sec) { if (sec<60) return sec.toFixed(1)+'s'; if (sec<3600) return Math.floor(sec/60)+'m '+Math.round(sec%60)+'s'; return Math.floor(sec/3600)+'h '+Math.floor((sec%3600)/60)+'m'; }
+function parseTS(s) { return new Date(s.replace(' ','T')).getTime(); }
+function lerp(a,b,t) { return a+(b-a)*t; }
+
+const allEpisodes = [];
+const recordings = reportData.recordings;
+recordings.forEach(rec => {
+  (rec.episodes||[]).forEach(ep => { allEpisodes.push({...ep, startMs: parseTS(ep.start_time), endMs: parseTS(ep.end_time), recording: rec.file}); });
+});
+
+const summary = reportData.overall_summary;
+const totalEpSec = summary.total_episode_seconds||0;
+const totalRecSec = recordings.reduce((a,r) => a + r.duration_hours*3600, 0);
+const epPct = totalRecSec > 0 ? (totalEpSec/totalRecSec*100).toFixed(1) : '0.0';
+const longestEp = allEpisodes.reduce((a,e) => Math.max(a,e.duration_seconds), 0);
+const byType = summary.episodes_by_type||{};
+
+document.getElementById('statsRow').innerHTML = `
+  <div class="stat-card danger"><div class="label">PVC Burden</div><div class="value">${(summary.overall_pvc_burden_pct||0).toFixed(1)}<span class="unit">%</span></div></div>
+  <div class="stat-card warn"><div class="label">Total Episodes</div><div class="value">${(summary.total_episodes||0).toLocaleString()}</div></div>
+  <div class="stat-card danger"><div class="label">Time in Episodes</div><div class="value">${fmtDuration(totalEpSec)} <span class="unit">(${epPct}%)</span></div></div>
+  <div class="stat-card accent"><div class="label">Longest Episode</div><div class="value">${fmtDuration(longestEp)}</div></div>
+  <div class="stat-card ok"><div class="label">Total Beats</div><div class="value">${(summary.total_beats_analysed||0).toLocaleString()}</div></div>
+`;
+document.getElementById('typeBreakdown').innerHTML = Object.entries(TYPE_CFG).map(([type,cfg]) => `
+  <div class="type-chip"><div class="type-dot" style="background:${cfg.cssVar}"></div><div><div class="tc-label">${cfg.label}</div></div><div class="tc-count" style="color:${cfg.cssVar}">${(byType[type]||0).toLocaleString()}</div></div>
+`).join('');
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
+  });
+});
+
+const tooltip = document.getElementById('tooltip');
+function showTooltip(e, html) {
+  tooltip.innerHTML = html; tooltip.classList.add('visible');
+  let x = e.clientX+14, y = e.clientY-10;
+  const rect = tooltip.getBoundingClientRect();
+  if (x+rect.width > window.innerWidth-10) x = e.clientX-rect.width-14;
+  if (y+rect.height > window.innerHeight-10) y = e.clientY-rect.height-10;
+  tooltip.style.left = x+'px'; tooltip.style.top = y+'px';
+}
+function hideTooltip() { tooltip.classList.remove('visible'); }
+
+function buildTimeline() {
+  const area = document.getElementById('timelineArea'); area.innerHTML = '';
+  recordings.forEach((rec, ri) => {
+    const recStart = parseTS(rec.start_time), recEnd = parseTS(rec.end_time), recSpan = recEnd-recStart;
+    const episodes = rec.episodes||[];
+    const wrapper = document.createElement('div'); wrapper.className = 'timeline-container';
+    wrapper.innerHTML = `<div class="recording-label"><div class="recording-dot ${ri>0?'rec2':''}"></div><span class="recording-name">${rec.file}</span><span class="recording-time">${fmtTime(rec.start_time)} &rarr; ${fmtTime(rec.end_time)} (${rec.duration_hours}h) &middot; ${rec.total_beats.toLocaleString()} beats &middot; PVC burden ${rec.beat_summary.pvc_burden_pct}%</span></div>`;
+    const track = document.createElement('div'); track.className = 'timeline-track';
+    track.style.background = 'linear-gradient(90deg,rgba(76,110,245,0.06),rgba(76,110,245,0.03))';
+    episodes.forEach(ep => {
+      const epStart = parseTS(ep.start_time), epEnd = parseTS(ep.end_time);
+      const left = ((epStart-recStart)/recSpan)*100, width = Math.max(((epEnd-epStart)/recSpan)*100,0.1);
+      let alpha = ep.episode_type==='couplet'?0.85:0.4;
+      if (ep.duration_seconds>120) alpha=1.0; else if (ep.duration_seconds>30) alpha=0.7;
+      const bar = document.createElement('div'); bar.className = 'timeline-episode';
+      bar.style.left = left+'%'; bar.style.width = width+'%'; bar.style.background = epColor(ep.episode_type,alpha);
+      const cfg = TYPE_CFG[ep.episode_type]||TYPE_CFG.bigeminy;
+      bar.addEventListener('mousemove', e => { showTooltip(e, `<div class="tt-title" style="color:${cfg.cssVar}">${cfg.label} Episode</div><div class="tt-row"><span class="tt-label">Start</span><span class="tt-val">${fmtTimeSec(ep.start_time)}</span></div><div class="tt-row"><span class="tt-label">End</span><span class="tt-val">${fmtTimeSec(ep.end_time)}</span></div><div class="tt-row"><span class="tt-label">Duration</span><span class="tt-val">${fmtDuration(ep.duration_seconds)}</span></div><div class="tt-row"><span class="tt-label">Beats</span><span class="tt-val">${ep.total_beats} (${ep.pvc_beats} PVC)</span></div><div class="tt-row"><span class="tt-label">Confidence</span><span class="tt-val">${(ep.avg_confidence*100).toFixed(0)}%</span></div>`); });
+      bar.addEventListener('mouseleave', hideTooltip);
+      track.appendChild(bar);
+    });
+    wrapper.appendChild(track);
+    const hoursDiv = document.createElement('div'); hoursDiv.className = 'timeline-hours'; hoursDiv.style.cssText='position:relative;height:20px';
+    const startHour = new Date(recStart); startHour.setMinutes(0,0,0);
+    let hMs = startHour.getTime(); if (hMs<recStart) hMs+=3600000;
+    while (hMs<recEnd) { const pct=((hMs-recStart)/recSpan)*100; const mark=document.createElement('span'); mark.className='timeline-hour-mark'; mark.style.left=pct+'%'; mark.textContent=new Date(hMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); hoursDiv.appendChild(mark); hMs+=3600000; }
+    wrapper.appendChild(hoursDiv);
+    if (episodes.length===0) { const note=document.createElement('div'); note.style.cssText='text-align:center;padding:8px;font-size:12px;color:var(--text-dim)'; note.textContent='No arrhythmia episodes detected in this recording'; wrapper.appendChild(note); }
+    area.appendChild(wrapper);
+  });
+}
+buildTimeline();
+
+function buildHeatmap() {
+  const grid = document.getElementById('heatmapGrid'); grid.innerHTML='';
+  const rec = recordings.find(r => (r.episodes||[]).length>0);
+  if (!rec) { grid.innerHTML='<div style="color:var(--text-dim)">No episode data</div>'; return; }
+  const recStart=parseTS(rec.start_time), recEnd=parseTS(rec.end_time), episodes=rec.episodes||[];
+  const bucketSize=5*60*1000;
+  const startHour=new Date(recStart); startHour.setMinutes(0,0,0);
+  let baseMs=startHour.getTime(); if (baseMs>recStart) baseMs-=3600000;
+  const endHour=new Date(recEnd); endHour.setMinutes(0,0,0); endHour.setHours(endHour.getHours()+1);
+  const hours=[];
+  for (let h=baseMs; h<endHour.getTime(); h+=3600000) {
+    const hourLabel=new Date(h).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+    const buckets=[];
+    for (let b=0;b<12;b++) { const bStart=h+b*bucketSize,bEnd=bStart+bucketSize; let epSec=0; episodes.forEach(ep => { const os=Math.max(parseTS(ep.start_time),bStart),oe=Math.min(parseTS(ep.end_time),bEnd); if (oe>os) epSec+=(oe-os)/1000; }); buckets.push({pct:Math.min(epSec/300,1),epSec}); }
+    hours.push({label:hourLabel,buckets});
+  }
+  hours.forEach(hour => {
+    const row=document.createElement('div'); row.className='heatmap-row'; row.innerHTML=`<div class="heatmap-label">${hour.label}</div>`;
+    const cells=document.createElement('div'); cells.className='heatmap-cells';
+    hour.buckets.forEach((b,bi) => {
+      const cell=document.createElement('div'); cell.className='heatmap-cell';
+      const r=Math.round(lerp(240,220,b.pct)),g=Math.round(lerp(242,38,b.pct)),bl=Math.round(lerp(247,38,b.pct));
+      cell.style.background=b.pct>0?`rgb(${r},${g},${bl})`:'#f4f6fa';
+      const minLabel=(bi*5).toString().padStart(2,'0');
+      cell.addEventListener('mousemove',e=>{ showTooltip(e,`<div class="tt-title">${hour.label}:${minLabel}</div><div class="tt-row"><span class="tt-label">Episode time</span><span class="tt-val">${b.epSec.toFixed(0)}s / 300s (${(b.pct*100).toFixed(0)}%)</span></div>`); });
+      cell.addEventListener('mouseleave',hideTooltip); cells.appendChild(cell);
+    });
+    row.appendChild(cells); grid.appendChild(row);
+  });
+  const labels=document.createElement('div'); labels.className='heatmap-minute-labels';
+  for (let m=0;m<60;m+=5) labels.innerHTML+=`<span>:${m.toString().padStart(2,'0')}</span>`;
+  grid.appendChild(labels);
+}
+buildHeatmap();
+
+function buildHourlyChart() {
+  const container=document.getElementById('hourlyChart'); container.innerHTML='';
+  const hourlyData=[];
+  recordings.forEach(rec => { (rec.hourly_summary||[]).forEach(h => { hourlyData.push({label:h.hour.slice(11,16),totalBeats:h.total_beats,pvcBeats:h.pvc_beats,pvcBurden:h.pvc_burden_pct}); }); });
+  const hourEpSec={};
+  allEpisodes.forEach(ep => { const hLabel=ep.start_time.slice(11,13); hourEpSec[hLabel]=(hourEpSec[hLabel]||0)+ep.duration_seconds; });
+  const maxBurden=Math.max(...hourlyData.map(h=>h.pvcBurden),1);
+  const barsDiv=document.createElement('div'); barsDiv.className='hourly-bars';
+  hourlyData.filter(h=>h.totalBeats>0).forEach(h => {
+    const group=document.createElement('div'); group.className='hourly-bar-group';
+    const valLabel=document.createElement('div'); valLabel.className='hourly-bar-value'; valLabel.textContent=h.pvcBurden.toFixed(0)+'%';
+    const bar=document.createElement('div'); bar.className='hourly-bar';
+    bar.style.height=Math.max((h.pvcBurden/(Math.ceil(maxBurden/10)*10))*160,3)+'px';
+    bar.style.background=h.pvcBurden>50?'var(--danger)':h.pvcBurden>20?'var(--warn)':'var(--ok)';
+    const epSec=hourEpSec[h.label.slice(0,2)]||0;
+    bar.addEventListener('mousemove',e=>{ showTooltip(e,`<div class="tt-title">${h.label}</div><div class="tt-row"><span class="tt-label">Total beats</span><span class="tt-val">${h.totalBeats.toLocaleString()}</span></div><div class="tt-row"><span class="tt-label">PVC beats</span><span class="tt-val">${h.pvcBeats.toLocaleString()}</span></div><div class="tt-row"><span class="tt-label">PVC burden</span><span class="tt-val">${h.pvcBurden.toFixed(1)}%</span></div><div class="tt-row"><span class="tt-label">Episode time</span><span class="tt-val">${fmtDuration(epSec)}</span></div>`); });
+    bar.addEventListener('mouseleave',hideTooltip);
+    const label=document.createElement('div'); label.className='hourly-bar-label'; label.textContent=h.label;
+    group.appendChild(valLabel); group.appendChild(bar); group.appendChild(label); barsDiv.appendChild(group);
+  });
+  container.appendChild(barsDiv);
+}
+buildHourlyChart();
+
+const maxDur=allEpisodes.reduce((a,e)=>Math.max(a,e.duration_seconds),1);
+function renderEpisodeTable() {
+  const typeFilter=document.getElementById('filterType').value;
+  const minDur=parseFloat(document.getElementById('filterDuration').value);
+  const sortKey=document.getElementById('sortBy').value;
+  let filtered=allEpisodes.filter(e=>e.duration_seconds>=minDur&&(!typeFilter||e.episode_type===typeFilter));
+  if (sortKey==='duration') filtered.sort((a,b)=>b.duration_seconds-a.duration_seconds);
+  else if (sortKey==='beats') filtered.sort((a,b)=>b.total_beats-a.total_beats);
+  else if (sortKey==='confidence') filtered.sort((a,b)=>b.avg_confidence-a.avg_confidence);
+  document.getElementById('episodeCount').textContent=`${filtered.length} episodes shown`;
+  const tbody=document.getElementById('episodeTableBody'); tbody.innerHTML='';
+  filtered.forEach((ep,i) => {
+    const barW=Math.max((ep.duration_seconds/maxDur)*100,2);
+    const cfg=TYPE_CFG[ep.episode_type]||TYPE_CFG.bigeminy;
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td style="color:var(--text-dim)">${i+1}</td><td>${typeBadgeHtml(ep.episode_type)}</td><td>${fmtTimeSec(ep.start_time)}</td><td>${fmtTimeSec(ep.end_time)}</td><td><span class="duration-bar" style="width:${barW}px;background:${cfg.cssVar}"></span>${fmtDuration(ep.duration_seconds)}</td><td>${ep.total_beats}</td><td style="color:var(--danger)">${ep.pvc_beats}</td><td>${(ep.avg_confidence*100).toFixed(0)}%</td>`;
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById('filterType').addEventListener('change',renderEpisodeTable);
+document.getElementById('filterDuration').addEventListener('change',renderEpisodeTable);
+document.getElementById('sortBy').addEventListener('change',renderEpisodeTable);
+renderEpisodeTable();
+</script>
+{% endblock %}

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose build)",
+      "Bash(docker tag ecg-ecg-analyser europe-west2-docker.pkg.dev/leatham-sandbox/leatham-acr/ecg-analyser)",
+      "Bash(docker push europe-west2-docker.pkg.dev/leatham-sandbox/leatham-acr/ecg-analyser)",
+      "Bash(gcloud run deploy ecg-analyser --image europe-west2-docker.pkg.dev/leatham-sandbox/leatham-acr/ecg-analyser:latest --region europe-west2 --project leatham-sandbox --platform managed --quiet)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\(''process_ecg.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import pyarrow; print\\(''pyarrow'', pyarrow.__version__\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \":*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

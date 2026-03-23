@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block title %}Analytics — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+  .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; }
+  .controls label { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 4px; }
+  .controls input[type="date"] { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  .controls input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
+  .seg-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg-btn { background: var(--bg); color: var(--text-dim); border: none; padding: 8px 18px; font-size: 13px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .seg-btn:not(:last-child) { border-right: 1px solid var(--border); }
+  .seg-btn.active { background: var(--accent); color: #fff; }
+  .seg-btn:hover:not(.active) { background: var(--border); }
+  .load-btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+  .load-btn:hover { opacity: 0.85; }
+  .controls-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+  .summary-row { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; flex: 1; min-width: 120px; }
+  .stat-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 4px; }
+  .stat-card .value { font-size: 22px; font-weight: 700; }
+  .stat-card .unit { font-size: 12px; font-weight: 400; color: var(--text-dim); }
+  .stat-card.danger .value { color: var(--danger); }
+  .stat-card.accent .value { color: var(--accent); }
+  .stat-card.ok .value { color: var(--ok); }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+  .section-title { font-size: 14px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+  .burden-legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-dim); margin-left: auto; }
+  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+  .chart-wrap { position: relative; width: 100%; }
+  canvas#burdenChart { display: block; width: 100%; }
+  .tooltip { display: none; position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.7; z-index: 1000; pointer-events: none; max-width: 240px; box-shadow: 0 4px 20px rgba(0,0,0,.12); }
+  .tooltip.visible { display: block; }
+  .loading { text-align: center; color: var(--text-dim); padding: 60px 0; font-size: 14px; }
+  .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-state { text-align: center; color: var(--text-dim); padding: 60px 0; font-size: 14px; }
+  .hint { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+{% endblock %}
+
+{% block content %}
+<h1>PVC Burden Analytics</h1>
+<div class="subtitle" id="subtitleText">Configure date range and granularity, then click Load.</div>
+
+<div class="controls">
+  <div>
+    <div class="controls-label">Granularity</div>
+    <div class="seg-group">
+      <button class="seg-btn active" id="btnDay" onclick="setGranularity('day')">By Day</button>
+      <button class="seg-btn" id="btnHour" onclick="setGranularity('hour')">By Hour</button>
+    </div>
+  </div>
+  <label>
+    Start date
+    <input type="date" id="startDate">
+  </label>
+  <label>
+    End date
+    <input type="date" id="endDate">
+  </label>
+  <div style="align-self:flex-end">
+    <button class="load-btn" onclick="loadData()">Load</button>
+  </div>
+  <div id="rangeHint" class="hint" style="align-self:flex-end"></div>
+</div>
+
+<div class="summary-row" id="summaryRow" style="display:none">
+  <div class="stat-card" id="cardDays"></div>
+  <div class="stat-card danger" id="cardAvg"></div>
+  <div class="stat-card danger" id="cardPeak"></div>
+  <div class="stat-card accent" id="cardTotalPvc"></div>
+  <div class="stat-card ok" id="cardTotalBeats"></div>
+</div>
+
+<div class="panel" id="chartPanel">
+  <div class="section-title">
+    PVC Burden (%)
+    <div class="burden-legend">
+      <span><span class="legend-dot" style="background:#16a34a"></span>&lt; 5 %</span>
+      <span><span class="legend-dot" style="background:#d97706"></span>5 &ndash; 10 %</span>
+      <span><span class="legend-dot" style="background:#dc2626"></span>&gt; 10 %</span>
+    </div>
+  </div>
+  <div class="chart-wrap">
+    <canvas id="burdenChart"></canvas>
+  </div>
+  <div id="chartEmpty" class="empty-state" style="display:none">No data for selected range.</div>
+  <div id="chartLoading" class="loading"><div class="spinner"></div><br>Loading&hellip;</div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var granularity = 'day';
+var chartData = [];
+
+(function() {
+  var today = new Date();
+  var startD = new Date(today); startD.setDate(today.getDate()-30);
+  document.getElementById('endDate').value = fmtISO(today);
+  document.getElementById('startDate').value = fmtISO(startD);
+  updateHint();
+  loadData();
+})();
+
+function fmtISO(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function pad(n) { return String(n).padStart(2,'0'); }
+
+function setGranularity(g) {
+  granularity = g;
+  document.getElementById('btnDay').classList.toggle('active', g==='day');
+  document.getElementById('btnHour').classList.toggle('active', g==='hour');
+  updateHint();
+}
+function updateHint() {
+  document.getElementById('rangeHint').textContent = granularity==='hour' ? 'Tip: limit to ~7 days for best readability.' : '';
+}
+
+async function loadData() {
+  var startVal=document.getElementById('startDate').value, endVal=document.getElementById('endDate').value;
+  if (!startVal||!endVal) return;
+  var startDt=startVal+' 00:00:00';
+  var endParts=endVal.split('-'), endNext=new Date(+endParts[0],+endParts[1]-1,+endParts[2]);
+  endNext.setDate(endNext.getDate()+1);
+  var endDt=fmtISO(endNext)+' 00:00:00';
+  document.getElementById('chartLoading').style.display='';
+  document.getElementById('chartEmpty').style.display='none';
+  document.getElementById('summaryRow').style.display='none';
+  document.getElementById('burdenChart').style.display='none';
+  try {
+    var url='/api/pvc_burden?granularity='+granularity+'&start='+encodeURIComponent(startDt)+'&end='+encodeURIComponent(endDt);
+    var res=await fetch(url); var json=await res.json(); chartData=json.data||[];
+  } catch(e) {
+    document.getElementById('chartLoading').style.display='none';
+    document.getElementById('chartEmpty').textContent='Error loading data: '+e.message;
+    document.getElementById('chartEmpty').style.display='';
+    return;
+  }
+  document.getElementById('chartLoading').style.display='none';
+  if (chartData.length===0){document.getElementById('chartEmpty').style.display='';document.getElementById('subtitleText').textContent='No data for the selected range.';return;}
+  document.getElementById('burdenChart').style.display='block';
+  renderSummary(); drawChart(); updateSubtitle(startVal,endVal);
+}
+
+function updateSubtitle(start,end) {
+  var n=chartData.length, unit=granularity==='day'?(n===1?'day':'days'):(n===1?'bucket':'buckets');
+  document.getElementById('subtitleText').textContent=n+' '+unit+'  \u00B7  '+start+' \u2192 '+end;
+}
+
+function renderSummary() {
+  var burdens=chartData.map(function(d){return d.pvc_burden;});
+  var avg=burdens.reduce(function(a,b){return a+b;},0)/burdens.length;
+  var peak=Math.max.apply(null,burdens);
+  var totalPvc=chartData.reduce(function(a,d){return a+d.pvc_beats;},0);
+  var totalBeats=chartData.reduce(function(a,d){return a+d.total_beats;},0);
+  document.getElementById('summaryRow').style.display='flex';
+  card('cardDays',chartData.length,granularity==='day'?'Days':'Hourly Buckets','','');
+  card('cardAvg',avg.toFixed(1),'Avg PVC Burden','%','danger');
+  card('cardPeak',peak.toFixed(1),'Peak PVC Burden','%','danger');
+  card('cardTotalPvc',totalPvc.toLocaleString(),'Total PVCs','','accent');
+  card('cardTotalBeats',totalBeats.toLocaleString(),'Total Beats','','ok');
+}
+function card(id,value,label,unit,cls) {
+  var el=document.getElementById(id);
+  el.className='stat-card'+(cls?' '+cls:'');
+  el.innerHTML='<div class="label">'+label+'</div><div class="value">'+value+(unit?' <span class="unit">'+unit+'</span>':'')+'</div>';
+}
+
+var barRects=[];
+function drawChart() {
+  var canvas=document.getElementById('burdenChart');
+  var dpr=window.devicePixelRatio||1;
+  var W=canvas.parentElement.clientWidth, H=320;
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  var ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr);
+  var PAD_L=52,PAD_R=16,PAD_T=16,PAD_B=52,cW=W-PAD_L-PAD_R,cH=H-PAD_T-PAD_B;
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+  var burdens=chartData.map(function(d){return d.pvc_burden;});
+  var maxBurden=Math.max.apply(null,burdens.concat([1]));
+  var yMax=Math.ceil(maxBurden/5)*5; if (yMax<5) yMax=5;
+  var yStep=yMax<=20?5:yMax<=50?10:20;
+  ctx.font='11px sans-serif'; ctx.fillStyle='#6b7280';
+  for (var pct=0;pct<=yMax;pct+=yStep) {
+    var y=PAD_T+cH-(pct/yMax)*cH;
+    ctx.strokeStyle=pct===0?'#c8ccd8':'#e4e7f0'; ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(PAD_L,y);ctx.lineTo(PAD_L+cW,y);ctx.stroke();
+    ctx.textAlign='right'; ctx.fillText(pct+'%',PAD_L-6,y+4);
+  }
+  ctx.save(); ctx.translate(12,PAD_T+cH/2); ctx.rotate(-Math.PI/2);
+  ctx.textAlign='center'; ctx.font='11px sans-serif'; ctx.fillStyle='#6b7280';
+  ctx.fillText('PVC Burden (%)',0,0); ctx.restore();
+  barRects=[];
+  var n=chartData.length, slotW=cW/n, barW=Math.max(slotW*0.7,1), barGap=(slotW-barW)/2;
+
+  // Vertical grid lines drawn first (behind bars)
+  ctx.lineWidth=1; ctx.setLineDash([4,4]); ctx.strokeStyle='#b0b8d0';
+  if (granularity==='hour') {
+    // line wherever the date changes between adjacent buckets
+    for (var gi=1; gi<n; gi++) {
+      if (chartData[gi].bucket.substring(0,10) !== chartData[gi-1].bucket.substring(0,10)) {
+        var lx=PAD_L+gi*slotW;
+        ctx.beginPath(); ctx.moveTo(lx,PAD_T); ctx.lineTo(lx,PAD_T+cH); ctx.stroke();
+      }
+    }
+  } else {
+    // line every 7 bars (weekly)
+    for (var gi=7; gi<n; gi+=7) {
+      var lx=PAD_L+gi*slotW;
+      ctx.beginPath(); ctx.moveTo(lx,PAD_T); ctx.lineTo(lx,PAD_T+cH); ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+
+  chartData.forEach(function(d,i) {
+    var bH=Math.max((d.pvc_burden/yMax)*cH,d.pvc_burden>0?1:0);
+    var bX=PAD_L+i*slotW+barGap, bY=PAD_T+cH-bH;
+    var color=d.pvc_burden<5?'#16a34a':d.pvc_burden<10?'#d97706':'#dc2626';
+    ctx.fillStyle=color; ctx.fillRect(bX,bY,barW,bH);
+    barRects.push({x:bX,y:bY,w:barW,h:bH,d:d});
+  });
+
+  var maxLabels=Math.floor(cW/72), step=Math.max(1,Math.ceil(n/maxLabels));
+  ctx.fillStyle='#6b7280'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+  for (var i=0;i<n;i+=step) {
+    var d=chartData[i], lx=PAD_L+i*slotW+slotW/2, label=formatBucket(d.bucket);
+    if (granularity==='hour'&&label.indexOf(' ')!==-1) {
+      var parts=label.split(' '); ctx.fillText(parts[0],lx,PAD_T+cH+16); ctx.fillText(parts[1],lx,PAD_T+cH+28);
+    } else { ctx.fillText(label,lx,PAD_T+cH+18); }
+  }
+  canvas.onmousemove=function(evt) {
+    var rect=canvas.getBoundingClientRect(), mx=evt.clientX-rect.left;
+    var hit=null;
+    for (var i=0;i<barRects.length;i++){var b=barRects[i];if(mx>=b.x&&mx<=b.x+b.w){hit=b.d;break;}}
+    if (!hit){var idx=Math.floor((mx-PAD_L)/slotW);if(idx>=0&&idx<chartData.length)hit=chartData[idx];}
+    if (hit){
+      var color=hit.pvc_burden<5?'#16a34a':hit.pvc_burden<10?'#d97706':'#dc2626';
+      showTip(evt,'<strong style="color:'+color+'">'+hit.pvc_burden.toFixed(2)+'% PVC Burden</strong><br>'+formatBucket(hit.bucket)+'<br>PVC beats: <strong>'+hit.pvc_beats.toLocaleString()+'</strong><br>Total beats: '+hit.total_beats.toLocaleString());
+    } else {hideTip();}
+  };
+  canvas.onmouseleave=hideTip;
+}
+
+var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function parseDatePart(bucket) {
+  // bucket may be "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" — always use only the date part
+  var datePart=bucket.substring(0,10).split('-');
+  return new Date(+datePart[0],+datePart[1]-1,+datePart[2]);
+}
+function formatBucket(bucket) {
+  if (!bucket) return '';
+  var d=parseDatePart(bucket);
+  if (granularity==='day') {
+    return d.getDate()+' '+MONTHS[d.getMonth()];
+  }
+  // hour mode: show "Mar 20 14:00"
+  var timePart=bucket.length>10?bucket.substring(11,16):'00:00';
+  return MONTHS[d.getMonth()]+' '+d.getDate()+' '+timePart;
+}
+
+var tooltip=document.getElementById('tooltip');
+function showTip(evt,html){tooltip.innerHTML=html;tooltip.classList.add('visible');var tx=evt.clientX+14,ty=evt.clientY-10;var tr=tooltip.getBoundingClientRect();if(tx+tr.width>window.innerWidth-10)tx=evt.clientX-tr.width-14;tooltip.style.left=tx+'px';tooltip.style.top=ty+'px';}
+function hideTip(){tooltip.classList.remove('visible');}
+
+window.addEventListener('resize',function(){if(chartData.length>0)drawChart();});
+</script>
+{% endblock %}

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Upload — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  .upload-wrap { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 48px); }
+  .upload-inner { width: 100%; max-width: 560px; }
+  h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; text-align: center; }
+  .subtitle { color: var(--text-dim); font-size: 14px; text-align: center; margin-bottom: 28px; }
+  .upload-card {
+    background: var(--surface); border: 2px dashed var(--border); border-radius: 14px;
+    padding: 48px 32px; text-align: center; transition: border-color 0.2s, background 0.2s;
+    cursor: pointer; position: relative;
+  }
+  .upload-card.dragover { border-color: var(--accent); background: rgba(108,140,255,0.06); }
+  .upload-card .icon { font-size: 48px; margin-bottom: 12px; }
+  .upload-card .label { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .upload-card .hint { font-size: 13px; color: var(--text-dim); }
+  .upload-card input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .file-list { margin-top: 20px; text-align: left; }
+  .file-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(108,140,255,0.06); border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
+  .file-item .fname { flex: 1; font-weight: 500; }
+  .file-item .fsize { color: var(--text-dim); font-size: 12px; }
+  .file-item .remove { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .btn { display: inline-block; margin-top: 24px; padding: 12px 32px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; width: 100%; }
+  .btn:hover { opacity: 0.9; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .flash { padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+  .flash.error { background: rgba(255,77,106,0.15); color: var(--danger); }
+  .flash.warning { background: rgba(255,170,51,0.15); color: #ffaa33; }
+  .flash.info { background: rgba(108,140,255,0.15); color: var(--accent); }
+  .info-box { margin-top: 24px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+  .info-box strong { color: var(--text); }
+{% endblock %}
+
+{% block content %}
+<div class="upload-wrap">
+  <div class="upload-inner">
+    <h1>&#x1FAC0; Upload ECG Files</h1>
+    <div class="subtitle">Upload Holter ECG R-files for automated arrhythmia detection</div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="{{ url_for('upload') }}" enctype="multipart/form-data" id="uploadForm">
+      <div class="upload-card" id="dropZone">
+        <input type="file" name="files" multiple id="fileInput" accept="*">
+        <div class="icon">&#x1F4C2;</div>
+        <div class="label">Drag &amp; drop R-files here</div>
+        <div class="hint">or click to browse &middot; supports multiple files</div>
+      </div>
+      <div class="file-list" id="fileList"></div>
+      <button type="submit" class="btn" id="submitBtn" disabled>Analyse ECG Files</button>
+    </form>
+
+    <div class="info-box">
+      <strong>Supported files:</strong> Binary R-files from ECG Browser / Viatom Holter monitors.<br>
+      File names must match the pattern <code>R{YYYYMMDDHHMMSS}</code> or <code>{device_id}R{YYYYMMDDHHMMSS}</code>.<br><br>
+      <strong>What happens:</strong><br>
+      1. Files are decoded from delta-compressed binary format<br>
+      2. ECG signal is resampled from 125 Hz &rarr; 100 Hz<br>
+      3. R-peaks are detected using PhysioKit<br>
+      4. Each beat is classified (Normal / PAC / PVC) using HeartKit BEAT-3-EFF-SM<br>
+      5. Arrhythmia episodes are identified<br>
+      6. Interactive timeline report is generated
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const fileList  = document.getElementById('fileList');
+const submitBtn = document.getElementById('submitBtn');
+let selectedFiles = new DataTransfer();
+
+function updateUI() {
+  fileList.innerHTML = '';
+  const files = selectedFiles.files;
+  submitBtn.disabled = files.length === 0;
+  submitBtn.textContent = files.length > 0 ? `Analyse ${files.length} File${files.length > 1 ? 's' : ''}` : 'Analyse ECG Files';
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const div = document.createElement('div');
+    div.className = 'file-item';
+    div.innerHTML = `<span class="fname">${f.name}</span><span class="fsize">${(f.size/1024).toFixed(0)} KB</span><button type="button" class="remove" data-idx="${i}" title="Remove">&#x2715;</button>`;
+    fileList.appendChild(div);
+  }
+  fileList.querySelectorAll('.remove').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      const dt = new DataTransfer();
+      for (let i = 0; i < selectedFiles.files.length; i++) { if (i !== idx) dt.items.add(selectedFiles.files[i]); }
+      selectedFiles = dt; fileInput.files = selectedFiles.files; updateUI();
+    });
+  });
+}
+
+fileInput.addEventListener('change', () => { for (const f of fileInput.files) selectedFiles.items.add(f); fileInput.files = selectedFiles.files; updateUI(); });
+['dragenter','dragover'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.add('dragover'); }));
+['dragleave','drop'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.remove('dragover'); }));
+dropZone.addEventListener('drop', e => { for (const f of e.dataTransfer.files) selectedFiles.items.add(f); fileInput.files = selectedFiles.files; updateUI(); });
+</script>
+{% endblock %}

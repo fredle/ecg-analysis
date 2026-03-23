@@ -1,0 +1,16 @@
+services:
+  ecg-analyser:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ecg-uploads:/app/uploads
+      - ecg-data:/app/data
+    environment:
+      - SECRET_KEY=change-me-in-production
+      - TF_CPP_MIN_LOG_LEVEL=3
+    restart: unless-stopped
+
+volumes:
+  ecg-uploads:
+  ecg-data:
