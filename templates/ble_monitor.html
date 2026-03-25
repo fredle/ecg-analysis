@@ -1,0 +1,562 @@
+{% extends "base.html" %}
+{% block title %}Live Monitor — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+.monitor-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+}
+.monitor-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.monitor-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  flex-shrink: 0;
+}
+.btn-connect {
+  padding: 8px 20px;
+  border-radius: 7px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.btn-connect:hover { opacity: 0.85; }
+.btn-connect:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-disconnect {
+  background: var(--danger);
+}
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.status-dot.ok    { background: var(--ok); }
+.status-dot.warn  { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.status-dot.error { background: var(--danger); }
+
+.stats-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  min-width: 160px;
+  flex: 1;
+  max-width: 260px;
+}
+.stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+.stat-unit {
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-dim);
+  margin-left: 2px;
+}
+.stat-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 5px;
+}
+.batt-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.batt-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: var(--ok);
+  transition: width 0.6s, background 0.3s;
+}
+
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.chart-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ecg-card {
+  background: #0d1117;
+  border-color: #1e2631;
+  flex: 2;
+  min-height: 240px;
+}
+.ecg-card .chart-header {
+  color: #4a5568;
+  border-bottom-color: #1e2631;
+}
+.chart-body {
+  flex: 1;
+  position: relative;
+  padding: 10px 12px;
+  min-height: 0;
+}
+.no-ble-warning {
+  background: #fff8ec;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #92400e;
+}
+{% endblock %}
+
+{% block content %}
+<div class="monitor-wrap">
+
+  <div class="monitor-header">
+    <h1>Live BLE Monitor</h1>
+    <button class="btn-connect" id="btnConnect">Connect Device</button>
+    <div class="status-pill">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Not connected</span>
+    </div>
+  </div>
+
+  <div id="noBleWarning" class="no-ble-warning" style="display:none">
+    Web Bluetooth is not available. Use Chrome or Edge on desktop/Android, served over HTTPS or localhost.
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Battery</div>
+      <div class="batt-bar"><div class="batt-fill" id="battFill"></div></div>
+      <div class="stat-value"><span id="battPct">—</span><span class="stat-unit">%</span></div>
+      <div class="stat-sub" id="battState">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Heart Rate</div>
+      <div class="stat-value"><span id="hrValue">—</span><span class="stat-unit">BPM</span></div>
+      <div class="stat-sub" id="hrSub">&nbsp;</div>
+    </div>
+  </div>
+
+  <div class="chart-card ecg-card">
+    <div class="chart-header">ECG &mdash; Real-time (10 s window, 125 Hz)</div>
+    <div class="chart-body">
+      <canvas id="ecgCanvas"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-card" style="min-height:200px;flex:1">
+    <div class="chart-header">Heart Rate History</div>
+    <div class="chart-body">
+      <canvas id="hrCanvas"></canvas>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+'use strict';
+
+// ── UUIDs ──────────────────────────────────────────────
+const VIATOM_SVC    = '14839ac4-7d7e-415c-9a42-167340cf2339';
+const VIATOM_WRITE  = '8b00ace7-eb0b-49b0-bbe9-9aee0a26e1a3';
+const VIATOM_NOTIFY = '0734594a-a8e7-4b1a-a6b1-cd5243059a57';
+const HR_SVC        = '0000180d-0000-1000-8000-00805f9b34fb';
+const HR_CHAR       = '00002a37-0000-1000-8000-00805f9b34fb';
+
+const ECG_SCALE      = 0.002467;
+const ECG_WINDOW     = 1250;   // 10 s × 125 Hz
+const HR_HISTORY_MAX = 120;
+const BATTERY_STATES = ['Not charging', 'Charging', 'Full', 'Low'];
+
+// ── State ──────────────────────────────────────────────
+let bleDevice   = null;
+let writeChar   = null;
+let seqNum      = 0;
+let rxBuf       = [];                         // byte accumulation buffer
+let ecgBuf      = new Array(ECG_WINDOW).fill(null); // mV values (null = no data)
+let hrHistory   = [];                         // [{t: Date, bpm: number}]
+let keepaliveId = null;
+
+// ── CRC-8/SMBUS (poly=0x07, init=0x00, no reflection) ─
+function crc8(bytes) {
+  let crc = 0;
+  for (const b of bytes) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++)
+      crc = (crc & 0x80) ? ((crc << 1) ^ 0x07) & 0xFF : (crc << 1) & 0xFF;
+  }
+  return crc;
+}
+
+// ── Packet builder ─────────────────────────────────────
+function buildPacket(cmd, payload) {
+  payload = payload || [];
+  const len = payload.length;
+  const frame = [
+    0xA5, cmd & 0xFF, (~cmd) & 0xFF, 0x00,
+    seqNum & 0xFF, len & 0xFF, (len >> 8) & 0xFF,
+  ].concat(payload);
+  seqNum = (seqNum + 1) % 255;
+  frame.push(crc8(frame));
+  return new Uint8Array(frame);
+}
+
+function buildSyncTimePayload() {
+  const n = new Date();
+  const yr = n.getFullYear();
+  return [yr & 0xFF, (yr >> 8) & 0xFF,
+          n.getMonth() + 1, n.getDate(),
+          n.getHours(), n.getMinutes(), n.getSeconds()];
+}
+
+// ── BLE connection ─────────────────────────────────────
+async function connect() {
+  try {
+    setStatus('Scanning\u2026', 'warn');
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [
+        { namePrefix: 'ER1' },
+        { services: [VIATOM_SVC] }
+      ],
+      optionalServices: [VIATOM_SVC, HR_SVC]
+    });
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+    setStatus('Connecting\u2026', 'warn');
+    const server = await bleDevice.gatt.connect();
+
+    // ── Viatom custom service ──
+    const viatomSvc = await server.getPrimaryService(VIATOM_SVC);
+    writeChar = await viatomSvc.getCharacteristic(VIATOM_WRITE);
+    const notifyChar = await viatomSvc.getCharacteristic(VIATOM_NOTIFY);
+    await notifyChar.startNotifications();
+    notifyChar.addEventListener('characteristicvaluechanged', onViatomNotify);
+
+    // ── Standard HR service (optional) ──
+    try {
+      const hrSvc  = await server.getPrimaryService(HR_SVC);
+      const hrChar = await hrSvc.getCharacteristic(HR_CHAR);
+      await hrChar.startNotifications();
+      hrChar.addEventListener('characteristicvaluechanged', onHrNotify);
+    } catch (e) {
+      console.warn('HR service unavailable:', e.message);
+    }
+
+    await sendStartupSequence();
+
+    const name = bleDevice.name || 'Device';
+    setStatus('Connected \u2014 ' + name, 'ok');
+    const btn = document.getElementById('btnConnect');
+    btn.textContent = 'Disconnect';
+    btn.classList.add('btn-disconnect');
+    btn.onclick = disconnect;
+
+    keepaliveId = setInterval(sendGetRtData, 1000);
+
+  } catch (e) {
+    if (e.name !== 'NotFoundError') {   // user cancelled = NotFoundError, don't show error
+      setStatus('Error: ' + e.message, 'error');
+    } else {
+      setStatus('Not connected', '');
+    }
+    console.error(e);
+  }
+}
+
+async function sendStartupSequence() {
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+  await writeChar.writeValueWithoutResponse(buildPacket(0x00));                   // getVibrateConfig
+  await delay(80);
+  await writeChar.writeValueWithoutResponse(buildPacket(0xE1));                   // getInfo
+  await delay(80);
+  await writeChar.writeValueWithoutResponse(buildPacket(0xEC, buildSyncTimePayload())); // syncTime
+  await delay(80);
+  await sendGetRtData();
+}
+
+async function sendGetRtData() {
+  if (!writeChar) return;
+  try {
+    await writeChar.writeValueWithoutResponse(buildPacket(0x03, [0x7D]));
+  } catch (e) {
+    console.warn('Write failed:', e.message);
+  }
+}
+
+function disconnect() {
+  if (keepaliveId) { clearInterval(keepaliveId); keepaliveId = null; }
+  if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
+}
+
+function onDisconnected() {
+  if (keepaliveId) { clearInterval(keepaliveId); keepaliveId = null; }
+  writeChar = null;
+  setStatus('Disconnected', 'error');
+  const btn = document.getElementById('btnConnect');
+  btn.textContent = 'Connect Device';
+  btn.classList.remove('btn-disconnect');
+  btn.onclick = connect;
+}
+
+// ── Notification handlers ──────────────────────────────
+function onViatomNotify(event) {
+  const bytes = new Uint8Array(event.target.value.buffer);
+  for (let i = 0; i < bytes.length; i++) rxBuf.push(bytes[i]);
+  processRxBuf();
+}
+
+function onHrNotify(event) {
+  const dv  = event.target.value;
+  const flags = dv.getUint8(0);
+  const bpm   = (flags & 0x01) ? dv.getUint16(1, true) : dv.getUint8(1);
+  if (bpm < 20 || bpm > 300) return;
+  const now = new Date();
+  hrHistory.push({ t: now, bpm });
+  if (hrHistory.length > HR_HISTORY_MAX) hrHistory.shift();
+  document.getElementById('hrValue').textContent = bpm;
+  document.getElementById('hrSub').textContent =
+    'Updated ' + now.toLocaleTimeString();
+  updateHrChart();
+}
+
+// ── Packet reassembly ──────────────────────────────────
+function processRxBuf() {
+  // Drop any leading non-0xA5 bytes
+  while (rxBuf.length > 0 && rxBuf[0] !== 0xA5) rxBuf.shift();
+  if (rxBuf.length < 7) return;
+
+  const payloadLen = rxBuf[5] | (rxBuf[6] << 8);
+  const totalLen   = 7 + payloadLen + 1;   // header + payload + CRC
+  if (rxBuf.length < totalLen) return;
+
+  const packet = rxBuf.splice(0, totalLen);
+  handlePacket(packet);
+
+  if (rxBuf.length >= 7) processRxBuf();   // handle back-to-back packets
+}
+
+function handlePacket(bytes) {
+  const cmd = bytes[1];
+  // Only handle CMD 0x03 real-time ECG response (286 bytes)
+  if (cmd === 0x03 && bytes.length === 286) parseEcgPacket(bytes);
+}
+
+// ── ECG packet parser ──────────────────────────────────
+// Byte layout:
+//   [0]      0xA5 start
+//   [1]      CMD = 0x03
+//   [2]      ~CMD
+//   [3]      0x01 (response)
+//   [4]      SEQ
+//   [5-6]    LEN = 278 (little-endian)
+//   [7]      battery_pct
+//   [8]      battery_state
+//   [9-16]   internal
+//   [17]     record_time
+//   [18-28]  reserved
+//   [29-284] 128 × int16 LE ECG samples
+//   [285]    CRC
+function parseEcgPacket(bytes) {
+  const battPct   = bytes[7];
+  const battState = bytes[8];
+
+  const samples = new Array(128);
+  for (let i = 0; i < 128; i++) {
+    const off = 29 + i * 2;
+    let raw = bytes[off] | (bytes[off + 1] << 8);
+    if (raw > 32767) raw -= 65536;
+    samples[i] = raw * ECG_SCALE;
+  }
+
+  // Append to rolling buffer
+  for (let i = 0; i < samples.length; i++) ecgBuf.push(samples[i]);
+  if (ecgBuf.length > ECG_WINDOW) ecgBuf.splice(0, ecgBuf.length - ECG_WINDOW);
+
+  // Update battery UI
+  document.getElementById('battPct').textContent = battPct;
+  const fill = document.getElementById('battFill');
+  fill.style.width  = battPct + '%';
+  fill.style.background = battPct < 20 ? 'var(--danger)'
+                        : battPct < 50 ? 'var(--warn)' : 'var(--ok)';
+  document.getElementById('battState').textContent =
+    (battState === 1 ? '\u26A1 ' : '') + (BATTERY_STATES[battState] || '');
+
+  updateEcgChart();
+}
+
+// ── Charts ─────────────────────────────────────────────
+let ecgChart, hrChart;
+
+function initCharts() {
+  // x-axis labels: -10.00 s … 0.00 s
+  const ecgLabels = Array.from({ length: ECG_WINDOW }, (_, i) => i);
+
+  ecgChart = new Chart(document.getElementById('ecgCanvas').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: ecgLabels,
+      datasets: [{
+        data: new Array(ECG_WINDOW).fill(null),
+        borderColor: '#00e87a',
+        borderWidth: 1.2,
+        pointRadius: 0,
+        tension: 0,
+        fill: false
+      }]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: {
+          type: 'category',
+          ticks: {
+            maxTicksLimit: 12,
+            color: '#4a5568',
+            callback: function(val, idx) {
+              // One label per second (every 125 samples)
+              if (idx % 125 !== 0) return null;
+              const sec = (idx - ECG_WINDOW) / 125;
+              return sec === 0 ? '0 s' : sec + ' s';
+            }
+          },
+          grid: { color: '#1a2030' }
+        },
+        y: {
+          title: { display: true, text: 'mV', color: '#4a5568', font: { size: 11 } },
+          suggestedMin: -0.8,
+          suggestedMax: 1.8,
+          ticks: { color: '#4a5568', font: { size: 11 } },
+          grid: { color: '#1a2030' }
+        }
+      }
+    }
+  });
+
+  hrChart = new Chart(document.getElementById('hrCanvas').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'BPM',
+        data: [],
+        borderColor: 'var(--accent)',
+        backgroundColor: 'rgba(76,110,245,0.08)',
+        borderWidth: 2,
+        pointRadius: 2.5,
+        pointBackgroundColor: 'var(--accent)',
+        tension: 0.35,
+        fill: true
+      }]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.parsed.y + ' BPM'
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: 'var(--text-dim)', maxTicksLimit: 8, font: { size: 11 } },
+          grid: { color: 'var(--border)' }
+        },
+        y: {
+          title: { display: true, text: 'BPM', color: 'var(--text-dim)', font: { size: 11 } },
+          suggestedMin: 40,
+          suggestedMax: 120,
+          ticks: { color: 'var(--text-dim)', font: { size: 11 } },
+          grid: { color: 'var(--border)' }
+        }
+      }
+    }
+  });
+}
+
+function updateEcgChart() {
+  ecgChart.data.datasets[0].data = ecgBuf.slice();
+  ecgChart.update();
+}
+
+function updateHrChart() {
+  hrChart.data.labels   = hrHistory.map(h => h.t.toLocaleTimeString());
+  hrChart.data.datasets[0].data = hrHistory.map(h => h.bpm);
+  hrChart.update();
+}
+
+// ── Status helper ──────────────────────────────────────
+function setStatus(msg, cls) {
+  document.getElementById('statusText').textContent = msg;
+  const dot = document.getElementById('statusDot');
+  dot.className = 'status-dot' + (cls ? ' ' + cls : '');
+}
+
+// ── Boot ───────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  if (!navigator.bluetooth) {
+    document.getElementById('noBleWarning').style.display = 'block';
+    document.getElementById('btnConnect').disabled = true;
+    setStatus('Web Bluetooth not supported', 'error');
+    return;
+  }
+  initCharts();
+  document.getElementById('btnConnect').onclick = connect;
+});
+</script>
+{% endblock %}

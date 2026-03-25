@@ -984,6 +984,11 @@ def index():
     return redirect(url_for("analytics"))
 
 
+@app.route("/ble")
+def ble_monitor():
+    return render_template("ble_monitor.html")
+
+
 @app.route("/api/model_status")
 def api_model_status():
     return jsonify({"status": _model_status, "error": _model_error})
