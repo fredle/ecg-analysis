@@ -61,6 +61,20 @@
   .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .empty-state { text-align: center; color: var(--text-dim); padding: 30px 0; font-size: 13px; }
+  .ecg-inline-panel { background: var(--surface); border: 1px solid var(--accent); border-radius: 10px; overflow: hidden; margin-bottom: 24px; display: none; }
+  .ecg-inline-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .ecg-inline-header .eih-title { font-size: 13px; font-weight: 600; }
+  .ecg-inline-header .eih-time { font-size: 12px; color: var(--text-dim); margin-left: 10px; font-variant-numeric: tabular-nums; }
+  .ecg-inline-header .eih-close { background: none; border: none; cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 0 2px; line-height: 1; }
+  .ecg-inline-header .eih-close:hover { color: var(--text); }
+  .ecg-inline-body { position: relative; }
+  #ecgInlineCanvas { display: block; width: 100%; cursor: crosshair; }
+  .ecg-inline-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); }
+  .ecg-inline-msg { color: #fff; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .ecg-nav-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); }
+  .ecg-nav-bar .ecg-btn { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; transition: background 0.15s; }
+  .ecg-nav-bar .ecg-btn:hover { background: var(--border); }
+  .ecg-nav-bar .ecg-range { flex: 1; text-align: center; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 {% endblock %}
 
 {% block content %}
@@ -104,6 +118,31 @@
     <canvas id="timelineCanvas"></canvas>
   </div>
   <div class="hour-labels" id="hourLabels"></div>
+</div>
+
+<div class="ecg-inline-panel" id="ecgInlinePanel">
+  <div class="ecg-inline-header">
+    <span class="eih-title">Raw ECG</span>
+    <span class="eih-time" id="ecgInlineTime"></span>
+    <button class="eih-close" onclick="closeEcgPanel()" title="Close">&#x2715;</button>
+  </div>
+  <div class="ecg-inline-body">
+    <canvas id="ecgInlineCanvas" height="312"></canvas>
+    <div class="ecg-inline-overlay" id="ecgInlineOverlay">
+      <div class="ecg-inline-msg"><div class="spinner"></div> Loading ECG&hellip;</div>
+    </div>
+  </div>
+  <div class="ecg-nav-bar">
+    <button class="ecg-btn" onclick="ecgStep(-60)">&#8592; 60 s</button>
+    <button class="ecg-btn" onclick="ecgStep(-10)">&#8592; 10 s</button>
+    <span class="ecg-range" id="ecgInlineRange"></span>
+    <button class="ecg-btn" onclick="ecgStep(10)">10 s &#8594;</button>
+    <button class="ecg-btn" onclick="ecgStep(60)">60 s &#8594;</button>
+    <span style="width:1px;background:var(--border);align-self:stretch;margin:0 4px"></span>
+    <button class="ecg-btn" onclick="ecgZoom(1)" title="Zoom in">&#xFF0B;</button>
+    <span id="ecgZoomLabel" style="font-size:11px;color:var(--text-dim);min-width:46px;text-align:center;font-variant-numeric:tabular-nums"></span>
+    <button class="ecg-btn" onclick="ecgZoom(-1)" title="Zoom out">&#x2212;</button>
+  </div>
 </div>
 
 <div class="panel">
@@ -344,7 +383,141 @@ function renderTimeline() {
     var tx=evt.clientX+14,ty=evt.clientY-10;var tr=tooltip.getBoundingClientRect();if(tx+tr.width>window.innerWidth-10)tx=evt.clientX-tr.width-14;tooltip.style.left=tx+'px';tooltip.style.top=ty+'px';
   };
   canvas.onmouseleave=function(){tooltip.classList.remove('visible');};
+  canvas.onclick=function(evt){
+    var rect=canvas.getBoundingClientRect();var frac=(evt.clientX-rect.left)/rect.width;
+    var clickMs=dayStart+frac*86400000;
+    openEcgPanel(clickMs);
+  };
+  canvas.style.cursor='crosshair';
 }
+
+// ── Inline ECG panel ─────────────────────────────────────────────────────────
+const ECG_ZOOM_LEVELS=[10,20,30,60,120,300,600];
+let ecgWindowSec=120;
+const ECG_COL_BG='#fffaf9',ECG_COL_GRID_MIN='#fce4e4',ECG_COL_GRID_MAJ='#f09090',ECG_COL_TRACE='#b91c1c',ECG_COL_CENTER='rgba(59,130,246,0.7)',ECG_COL_NO_DATA='rgba(200,200,210,0.25)';
+const ECG_COL_EP={bigeminy:'rgba(220,38,38,0.18)',vtach:'rgba(147,51,234,0.18)',trigeminy:'rgba(217,119,6,0.18)',couplet:'rgba(234,88,12,0.18)'};
+let ecgCenterMs=null,ecgLastData=null,ecgLastEps=[],ecgLoading=false;
+
+function pad2(n){return String(n).padStart(2,'0');}
+function fmtMsEcg(ms,showDate){var d=new Date(ms);var date=d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());var time=pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());return showDate?date+' '+time:time;}
+function fmtIsoEcg(ms){var d=new Date(ms);return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+'T'+pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());}
+function isInRange(ms,ranges){for(var i=0;i<ranges.length;i++){if(ms>=ranges[i][0]&&ms<ranges[i][1])return true;}return false;}
+
+function openEcgPanel(ms){
+  document.getElementById('ecgInlinePanel').style.display='block';
+  document.getElementById('ecgInlinePanel').scrollIntoView({behavior:'smooth',block:'nearest'});
+  loadInlineEcg(ms);
+}
+function closeEcgPanel(){
+  document.getElementById('ecgInlinePanel').style.display='none';
+  ecgCenterMs=null; ecgLastData=null; ecgLastEps=[]; ecgWindowSec=120;
+}
+function ecgStep(sec){if(ecgCenterMs!==null)loadInlineEcg(ecgCenterMs+sec*1000);}
+function ecgZoom(dir){
+  var idx=ECG_ZOOM_LEVELS.indexOf(ecgWindowSec);
+  if(idx===-1)idx=ECG_ZOOM_LEVELS.indexOf(120);
+  var next=idx-dir; // zoom in (dir=1) → smaller index → smaller window
+  if(next<0||next>=ECG_ZOOM_LEVELS.length)return;
+  ecgWindowSec=ECG_ZOOM_LEVELS[next];
+  if(ecgCenterMs!==null)loadInlineEcg(ecgCenterMs);
+}
+
+async function loadInlineEcg(ms){
+  if(ecgLoading)return; ecgLoading=true; ecgCenterMs=ms;
+  var overlay=document.getElementById('ecgInlineOverlay'); overlay.style.display='flex';
+  var halfMs=ecgWindowSec/2*1000;
+  document.getElementById('ecgInlineTime').textContent=fmtMsEcg(ms,true);
+  document.getElementById('ecgInlineRange').textContent=fmtMsEcg(ms-halfMs,false)+' – '+fmtMsEcg(ms+halfMs,false);
+  var zoomIdx=ECG_ZOOM_LEVELS.indexOf(ecgWindowSec);
+  document.getElementById('ecgZoomLabel').textContent=ecgWindowSec>=60?(ecgWindowSec/60)+'m':ecgWindowSec+'s';
+  try {
+    var isoC=fmtIsoEcg(ms);
+    var results=await Promise.all([
+      fetch('/api/ecg_raw?center='+encodeURIComponent(isoC)+'&window='+ecgWindowSec).then(function(r){return r.json();}),
+      fetch('/api/episodes?start='+encodeURIComponent(fmtIsoEcg(ms-halfMs))+'&end='+encodeURIComponent(fmtIsoEcg(ms+halfMs))).then(function(r){return r.json();})
+    ]);
+    var data=results[0],epData=results[1];
+    if(data.error)throw new Error(data.error);
+    ecgLastData=data; ecgLastEps=epData.episodes||[];
+    if(!data.data_ranges||data.data_ranges.length===0){
+      document.getElementById('ecgInlineOverlay').querySelector('.ecg-inline-msg').textContent='No recording data for this time.';
+    } else {
+      overlay.style.display='none';
+      renderInlineEcg();
+    }
+  } catch(err){
+    overlay.style.display='flex';
+    document.getElementById('ecgInlineOverlay').querySelector('.ecg-inline-msg').innerHTML='<span style="color:#f87171">Error: '+err.message+'</span>';
+  } finally { ecgLoading=false; }
+}
+
+function renderInlineEcg(){
+  var canvas=document.getElementById('ecgInlineCanvas');
+  var data=ecgLastData,episodes=ecgLastEps;
+  var dpr=window.devicePixelRatio||1;
+  var w=canvas.parentElement.clientWidth;
+  var PLOT_H=280,AXIS_H=32,CANVAS_H=PLOT_H+AXIS_H,PAD_LEFT=8,PAD_RIGHT=8;
+  canvas.style.width=w+'px'; canvas.style.height=CANVAS_H+'px';
+  canvas.width=Math.round(w*dpr); canvas.height=Math.round(CANVAS_H*dpr);
+  var ctx=canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  var plotW=w-PAD_LEFT-PAD_RIGHT;
+  var samples=data.samples,startMs=data.start_ms,sr=data.sample_rate,ranges=data.data_ranges,nSamples=samples.length,intervalMs=1000/sr;
+  var yMin=Infinity,yMax=-Infinity;
+  for(var i=0;i<nSamples;i++){var ms=startMs+i*intervalMs;if(!isInRange(ms,ranges))continue;if(samples[i]<yMin)yMin=samples[i];if(samples[i]>yMax)yMax=samples[i];}
+  if(!isFinite(yMin)){yMin=-512;yMax=512;}
+  var yPad=Math.max((yMax-yMin)*0.12,50); yMin-=yPad; yMax+=yPad; var yRange=yMax-yMin;
+  function yOf(v){return PLOT_H-(v-yMin)/yRange*PLOT_H;}
+  function xOf(ms){return PAD_LEFT+(ms-startMs)/(nSamples*intervalMs)*plotW;}
+  ctx.fillStyle=ECG_COL_BG; ctx.fillRect(PAD_LEFT,0,plotW,PLOT_H);
+  ctx.fillStyle=ECG_COL_NO_DATA;
+  var prevEnd=startMs,totalEndMs=startMs+nSamples*intervalMs;
+  ranges.forEach(function(r){if(r[0]>prevEnd)ctx.fillRect(xOf(prevEnd),0,xOf(r[0])-xOf(prevEnd),PLOT_H);prevEnd=r[1];});
+  if(prevEnd<totalEndMs)ctx.fillRect(xOf(prevEnd),0,xOf(totalEndMs)-xOf(prevEnd),PLOT_H);
+  episodes.forEach(function(ep){var col=ECG_COL_EP[ep.episode_type]||'rgba(100,100,200,0.15)';var s=new Date(ep.start_time.replace(' ','T')).getTime(),e=new Date(ep.end_time.replace(' ','T')).getTime();var x1=Math.max(PAD_LEFT,xOf(s)),x2=Math.min(PAD_LEFT+plotW,xOf(e));if(x2>x1){ctx.fillStyle=col;ctx.fillRect(x1,0,x2-x1,PLOT_H);ctx.fillStyle=col.replace('0.18','0.9');ctx.font='9px system-ui';ctx.fillText(ep.episode_type,x1+3,11);}});
+  ctx.strokeStyle=ECG_COL_GRID_MIN; ctx.lineWidth=0.5;
+  var windowMs=nSamples*intervalMs,firstGrid1s=Math.ceil(startMs/1000)*1000;
+  ctx.beginPath();for(var t=firstGrid1s;t<startMs+windowMs;t+=1000){var x=xOf(t);ctx.moveTo(x,0);ctx.lineTo(x,PLOT_H);}ctx.stroke();
+  ctx.strokeStyle=ECG_COL_GRID_MAJ; ctx.lineWidth=0.8;
+  ctx.fillStyle='#888'; ctx.font="11px 'Segoe UI',system-ui"; ctx.textAlign='center'; ctx.textBaseline='top';
+  var firstGrid5s=Math.ceil(startMs/5000)*5000;
+  ctx.beginPath();for(var t=firstGrid5s;t<=startMs+windowMs;t+=5000){var x=xOf(t);ctx.moveTo(x,0);ctx.lineTo(x,PLOT_H);}ctx.stroke();
+  ctx.fillStyle=ECG_COL_BG; ctx.fillRect(PAD_LEFT,PLOT_H,plotW,AXIS_H);
+  ctx.fillStyle='#555';
+  for(var t=firstGrid5s;t<=startMs+windowMs;t+=5000){var x=xOf(t);if(x<PAD_LEFT+20||x>PAD_LEFT+plotW-20)continue;ctx.fillText(fmtMsEcg(t,false),x,PLOT_H+6);}
+  var centerX=PAD_LEFT+plotW/2; ctx.strokeStyle=ECG_COL_CENTER; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+  ctx.beginPath();ctx.moveTo(centerX,0);ctx.lineTo(centerX,PLOT_H);ctx.stroke();ctx.setLineDash([]);
+  ctx.strokeStyle=ECG_COL_TRACE; ctx.lineWidth=1.2; ctx.lineJoin='round'; ctx.beginPath();
+  var penDown=false;
+  for(var px=0;px<plotW;px++){
+    var sLo=Math.max(0,Math.floor(px*nSamples/plotW)),sHi=Math.min(nSamples,Math.ceil((px+1)*nSamples/plotW));
+    var midMs=startMs+((sLo+sHi)/2)*intervalMs;
+    if(!isInRange(midMs,ranges)){penDown=false;continue;}
+    var lo=Infinity,hi=-Infinity;for(var s=sLo;s<sHi;s++){if(samples[s]<lo)lo=samples[s];if(samples[s]>hi)hi=samples[s];}
+    var cx2=PAD_LEFT+px+0.5,yLo=yOf(lo),yHi=yOf(hi),yMid=(yLo+yHi)/2;
+    if(!penDown){ctx.moveTo(cx2,yMid);penDown=true;}else{ctx.lineTo(cx2,yMid);if(yLo!==yHi){ctx.lineTo(cx2,yLo);ctx.lineTo(cx2,yHi);ctx.lineTo(cx2,yMid);}}
+  }
+  ctx.stroke();
+  ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.lineWidth=1; ctx.strokeRect(PAD_LEFT,0,plotW,PLOT_H);
+  canvas._ecgInfo={startMs,nSamples,intervalMs,plotW,yMin,yMax,yRange,samples,ranges};
+  canvas.onmousemove=function(e){
+    if(!canvas._ecgInfo)return;
+    var info=canvas._ecgInfo;var rect=canvas.getBoundingClientRect();var px=e.clientX-rect.left-PAD_LEFT;
+    if(px<0||px>info.plotW){tooltip.classList.remove('visible');return;}
+    var frac=px/info.plotW,sIdx=Math.round(frac*info.nSamples),ms=info.startMs+sIdx*info.intervalMs;
+    var inData=isInRange(ms,info.ranges),val=inData?info.samples[Math.min(sIdx,info.nSamples-1)]:null;
+    showTip(e,'<strong>'+fmtMsEcg(ms,true)+'</strong>'+(val!==null?'<br>Value: '+val:'<br><em>No recording</em>'));
+  };
+  canvas.onmouseleave=function(){hideTip();};
+  canvas.onclick=function(e){
+    if(!canvas._ecgInfo)return;
+    var info=canvas._ecgInfo;var rect=canvas.getBoundingClientRect();var px=e.clientX-rect.left-PAD_LEFT;
+    if(px<0||px>info.plotW)return;
+    var ms=info.startMs+(px/info.plotW)*info.nSamples*info.intervalMs;
+    loadInlineEcg(ms);
+  };
+}
+
+window.addEventListener('resize',function(){if(ecgLastData)renderInlineEcg();});
 
 function renderHeatmap() {
   var container=document.getElementById('heatmapContainer');
