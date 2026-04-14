@@ -1,6 +1,6 @@
 """
-ECG Bigeminy Analysis Web Application
-======================================
+ECG Analyser Web Application
+============================
 Flask web app that accepts ECG R-file uploads, decodes them,
 runs beat classification with HeartKit BEAT-3-EFF-SM, detects
 bigeminy episodes, and displays an interactive timeline report.
@@ -1235,23 +1235,6 @@ def results(session_id):
         report = json.load(f)
 
     # Determine time range for subtitle
-    all_starts = [r["start_time"] for r in report["recordings"]]
-    all_ends = [r["end_time"] for r in report["recordings"]]
-    earliest = min(all_starts) if all_starts else ""
-    latest = max(all_ends) if all_ends else ""
-
-    return render_template("results.html",
-                           report_json=json.dumps(report),
-                           earliest=earliest,
-                           latest=latest)
-
-
-@app.route("/history")
-def history():
-    """Show all-time arrhythmia episodes from the parquet file."""
-    df = load_all_episodes()
-    report = build_report_from_parquet(df)
-
     all_starts = [r["start_time"] for r in report["recordings"]]
     all_ends = [r["end_time"] for r in report["recordings"]]
     earliest = min(all_starts) if all_starts else ""

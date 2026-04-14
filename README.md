@@ -1,4 +1,4 @@
-# ECG Bigeminy Analyser
+# ECG Analyser
 
 A web application that accepts Holter ECG R-file uploads, decodes them, classifies beats using a HeartKit deep learning model, detects bigeminy episodes, and displays an interactive timeline dashboard.
 
@@ -11,7 +11,6 @@ A web application that accepts Holter ECG R-file uploads, decodes them, classifi
 - **Visualise** results with an interactive timeline, density heatmap, hourly burden chart, and episode list
 - **Persist** all bigeminy episodes in a single Parquet file; re-uploading a recording overwrites episodes for that time period
 - **Archive** every uploaded R-file in `data/raw/`
-- **View all-time history** across all uploads at `/history`
 
 ## Project Structure
 
