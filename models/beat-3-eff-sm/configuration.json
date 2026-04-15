@@ -1,0 +1,207 @@
+{
+  "name": "beat-3-eff-lg",
+  "project": "hk-beat-3",
+  "job_dir": "results/beat-3-eff-lg",
+  "datasets": [
+    {
+      "name": "icentia11k",
+      "params": {
+        "path": "./datasets/icentia11k"
+      }
+    }
+  ],
+  "dataset_weights": null,
+  "force_download": false,
+  "sampling_rate": 100,
+  "frame_size": 512,
+  "samples_per_patient": [
+    10,
+    40,
+    40
+  ],
+  "val_samples_per_patient": [
+    10,
+    40,
+    40
+  ],
+  "test_samples_per_patient": [
+    10,
+    40,
+    40
+  ],
+  "preprocesses": [
+    {
+      "name": "layer_norm",
+      "params": {
+        "epsilon": 0.01,
+        "name": "znorm"
+      }
+    }
+  ],
+  "augmentations": [],
+  "num_classes": 3,
+  "class_map": {
+    "0": 0,
+    "1": 1,
+    "2": 2
+  },
+  "class_names": [
+    "QRS",
+    "PAC",
+    "PVC"
+  ],
+  "train_patients": null,
+  "val_patients": 0.2,
+  "test_patients": null,
+  "val_file": "results/beat-3-eff-lg/val.tfds",
+  "test_file": "results/beat-3-eff-lg/val.tfds",
+  "val_size": 40000,
+  "test_size": 40000,
+  "resume": false,
+  "architecture": {
+    "name": "efficientnetv2",
+    "params": {
+      "input_filters": 24,
+      "input_kernel_size": [
+        1,
+        9
+      ],
+      "input_strides": [
+        1,
+        2
+      ],
+      "blocks": [
+        {
+          "filters": 32,
+          "depth": 2,
+          "kernel_size": [
+            1,
+            9
+          ],
+          "strides": [
+            1,
+            2
+          ],
+          "ex_ratio": 1,
+          "se_ratio": 4,
+          "norm": "layer"
+        },
+        {
+          "filters": 48,
+          "depth": 2,
+          "kernel_size": [
+            1,
+            9
+          ],
+          "strides": [
+            1,
+            2
+          ],
+          "ex_ratio": 1,
+          "se_ratio": 4,
+          "norm": "layer"
+        },
+        {
+          "filters": 56,
+          "depth": 1,
+          "kernel_size": [
+            1,
+            9
+          ],
+          "strides": [
+            1,
+            2
+          ],
+          "ex_ratio": 1,
+          "se_ratio": 4,
+          "norm": "layer"
+        },
+        {
+          "filters": 64,
+          "depth": 1,
+          "kernel_size": [
+            1,
+            9
+          ],
+          "strides": [
+            1,
+            2
+          ],
+          "ex_ratio": 1,
+          "se_ratio": 4,
+          "norm": "layer"
+        },
+        {
+          "filters": 72,
+          "depth": 1,
+          "kernel_size": [
+            1,
+            9
+          ],
+          "strides": [
+            1,
+            2
+          ],
+          "ex_ratio": 1,
+          "se_ratio": 4,
+          "norm": "layer"
+        },
+        {
+          "filters": 96,
+          "depth": 1,
+          "kernel_size": [
+            1,
+            9
+          ],
+          "strides": [
+            1,
+            2
+          ],
+          "ex_ratio": 1,
+          "se_ratio": 4,
+          "norm": "layer"
+        }
+      ],
+      "norm": "layer",
+      "output_filters": 0,
+      "include_top": true,
+      "use_logits": true
+    }
+  },
+  "model_file": "results/beat-3-eff-lg/model.keras",
+  "use_logits": false,
+  "weights_file": null,
+  "quantization": {
+    "enabled": false,
+    "qat": false,
+    "format": "INT8",
+    "io_type": "float32",
+    "conversion": "KERAS",
+    "debug": false,
+    "fallback": false,
+    "mode": "FP32",
+    "concrete": true
+  },
+  "lr_rate": 0.001,
+  "lr_cycles": 1,
+  "lr_decay": 0.9,
+  "label_smoothing": 0.0,
+  "batch_size": 256,
+  "buffer_size": 50000,
+  "epochs": 150,
+  "steps_per_epoch": 50,
+  "val_steps_per_epoch": 10,
+  "val_metric": "loss",
+  "class_weights": "balanced",
+  "threshold": 0.5,
+  "test_metric": "f1",
+  "test_metric_threshold": 0.02,
+  "tflm_var_name": "g_beat_model",
+  "tflm_file": "results/beat-3-eff-lg/beat_model_buffer.h",
+  "backend": "pc",
+  "demo_size": 900,
+  "display_report": true,
+  "seed": 17506,
+  "data_parallelism": 32,
+  "verbose": 2
+}
