@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+venv/
 
 # Data — large binary/parquet files
 data/raw/
@@ -31,3 +32,9 @@ import/
 # OS
 .DS_Store
 Thumbs.db
+
+# Xcode
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/**/DerivedData/
+ios/**/*.xcworkspace/xcuserdata/

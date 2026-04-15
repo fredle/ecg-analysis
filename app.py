@@ -996,19 +996,37 @@ def api_model_status():
 
 @app.route("/reprocess")
 def reprocess_page():
-    """Show all raw files available for reprocessing."""
-    raw_files = sorted([
-        f for f in os.listdir(RAW_DIR)
-        if is_valid_r_filename(f)
-    ])
-    # Parse timestamp from each filename for display
+    """Show raw files available for reprocessing, newest first, paginated."""
+    raw_files = sorted(
+        [f for f in os.listdir(RAW_DIR) if is_valid_r_filename(f)],
+        reverse=True,
+    )
     file_info = []
     for fname in raw_files:
         m = re.search(r"R(\d{14})$", fname)
         ts = datetime.strptime(m.group(1), "%Y%m%d%H%M%S") if m else None
         size_kb = os.path.getsize(os.path.join(RAW_DIR, fname)) // 1024
         file_info.append({"name": fname, "ts": ts, "size_kb": size_kb})
-    return render_template("reprocess.html", files=file_info)
+
+    per_page = 20
+    total_files = len(file_info)
+    total_pages = max(1, (total_files + per_page - 1) // per_page)
+    try:
+        page = int(request.args.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    page_files = file_info[start:start + per_page]
+
+    return render_template(
+        "reprocess.html",
+        files=page_files,
+        total_files=total_files,
+        page=page,
+        total_pages=total_pages,
+        per_page=per_page,
+    )
 
 
 @app.route("/api/reprocess", methods=["POST"])

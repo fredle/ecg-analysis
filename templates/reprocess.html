@@ -26,12 +26,22 @@
   .btn-submit:disabled { opacity: 0.4; cursor: default; }
   .flash { padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
   .flash.error { background: rgba(255,77,106,0.15); color: var(--danger); }
+  .pagination { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 16px 0; justify-content: center; }
+  .pagination a, .pagination span { min-width: 32px; padding: 5px 9px; border-radius: 6px; font-size: 12px; text-align: center; border: 1px solid var(--border); color: var(--text-dim); text-decoration: none; transition: border-color 0.2s, color 0.2s; }
+  .pagination a:hover { border-color: var(--accent); color: var(--text); }
+  .pagination .current { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .pagination .disabled { opacity: 0.4; }
+  .pagination .ellipsis { border: none; }
 {% endblock %}
 
 {% block content %}
 <div class="container">
   <h1>&#x21BA; Reprocess Raw Files</h1>
-  <div class="subtitle">{{ files|length }} file{{ 's' if files|length != 1 else '' }} stored in raw archive &middot; select files to reprocess</div>
+  <div class="subtitle">
+    {{ total_files }} file{{ 's' if total_files != 1 else '' }} in raw archive
+    {% if total_pages > 1 %}&middot; page {{ page }} of {{ total_pages }} ({{ files|length }} shown){% endif %}
+    &middot; newest first
+  </div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, message in messages %}
@@ -39,12 +49,31 @@
     {% endfor %}
   {% endwith %}
 
-  {% if not files %}
+  {% if total_files == 0 %}
     <div class="empty-state">No raw files found &mdash; upload ECG files first.</div>
   {% else %}
+  {% macro pagination() %}
+    {% if total_pages > 1 %}
+    <nav class="pagination">
+      {% if page > 1 %}<a href="?page={{ page - 1 }}">&lsaquo; Prev</a>{% else %}<span class="disabled">&lsaquo; Prev</span>{% endif %}
+      {% set ns_pg = namespace(last=0) %}
+      {% for p in range(1, total_pages + 1) %}
+        {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+          {% if p - ns_pg.last > 1 %}<span class="ellipsis">&hellip;</span>{% endif %}
+          {% if p == page %}<span class="current">{{ p }}</span>
+          {% else %}<a href="?page={{ p }}">{{ p }}</a>{% endif %}
+          {% set ns_pg.last = p %}
+        {% endif %}
+      {% endfor %}
+      {% if page < total_pages %}<a href="?page={{ page + 1 }}">Next &rsaquo;</a>{% else %}<span class="disabled">Next &rsaquo;</span>{% endif %}
+    </nav>
+    {% endif %}
+  {% endmacro %}
+
   <form method="POST" action="{{ url_for('api_reprocess') }}" id="reprocessForm">
+    {{ pagination() }}
     <div class="toolbar">
-      <button type="button" class="toolbar-btn" onclick="selectAll()">Select all</button>
+      <button type="button" class="toolbar-btn" onclick="selectAll()">Select all on page</button>
       <button type="button" class="toolbar-btn" onclick="selectNone()">Clear</button>
       <button type="button" class="toolbar-btn" onclick="selectToday()">Today</button>
       <button type="button" class="toolbar-btn" onclick="selectLast7()">Last 7 days</button>
@@ -73,6 +102,8 @@
       </label>
     {% endfor %}
     </div>
+
+    {{ pagination() }}
 
     <div class="submit-bar">
       <button type="submit" class="btn-submit" id="submitBtn" disabled>Reprocess selected files</button>
