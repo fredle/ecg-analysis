@@ -1,0 +1,64 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT: leatham-sandbox
+  REGION: europe-west2
+  REGISTRY: europe-west2-docker.pkg.dev/leatham-sandbox/leatham-acr
+  IMAGE: ecg-analyser
+  SERVICE: ecg-analyser
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT }}
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        run: docker build -t "${REGISTRY}/${IMAGE}:latest" .
+
+      - name: Push image
+        run: docker push "${REGISTRY}/${IMAGE}:latest"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --image "${REGISTRY}/${IMAGE}:latest" \
+            --region "${REGION}" \
+            --project "${PROJECT}" \
+            --platform managed \
+            --quiet
+
+      - name: Print service URL
+        run: |
+          url=$(gcloud run services describe "${SERVICE}" \
+            --region "${REGION}" \
+            --project "${PROJECT}" \
+            --format "value(status.url)")
+          echo "Service URL: ${url}"
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Service URL: ${url}" >> "$GITHUB_STEP_SUMMARY"

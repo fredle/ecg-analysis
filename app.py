@@ -84,6 +84,7 @@ RAW_CHUNK_ROW_GROUP = 60   # 60 chunks = 10-minute row group
 _model = None
 _model_status = "loading"   # "loading" | "ready" | "error"
 _model_error = None
+_model_ready_event = threading.Event()
 
 
 def _load_model_bg():
@@ -98,16 +99,27 @@ def _load_model_bg():
         log.error("Model load failed: %s", exc)
         _model_error = str(exc)
         _model_status = "error"
+    finally:
+        _model_ready_event.set()
 
 
 threading.Thread(target=_load_model_bg, daemon=True).start()
 
 
-def get_model():
+def get_model(on_progress=None):
+    """Return the loaded model, blocking until it becomes ready.
+
+    If the model is still loading, wait for it rather than failing. A progress
+    callback may be provided to surface a "waiting" message to the caller.
+    """
+    if _model_status == "loading":
+        msg = "Model is still loading — waiting for it to become ready…"
+        log.info(msg)
+        if on_progress:
+            on_progress(msg)
+        _model_ready_event.wait()
     if _model_status == "ready":
         return _model
-    if _model_status == "loading":
-        raise RuntimeError("Model is still loading — please wait a moment and try again.")
     raise RuntimeError(f"Model failed to load: {_model_error}")
 
 
@@ -483,7 +495,8 @@ def analyse_files(filepaths, on_progress=None):
             continue
 
         emit("  Classifying beats…")
-        beat_classes, beat_probs = classify_beats(ecg_100, peaks, get_model(),
+        model = get_model(on_progress=emit)
+        beat_classes, beat_probs = classify_beats(ecg_100, peaks, model,
                                                   on_progress=on_progress)
 
         n_normal = int(np.sum(beat_classes == 0))
@@ -996,19 +1009,37 @@ def api_model_status():
 
 @app.route("/reprocess")
 def reprocess_page():
-    """Show all raw files available for reprocessing."""
-    raw_files = sorted([
-        f for f in os.listdir(RAW_DIR)
-        if is_valid_r_filename(f)
-    ])
-    # Parse timestamp from each filename for display
+    """Show raw files available for reprocessing, newest first, paginated."""
+    raw_files = sorted(
+        [f for f in os.listdir(RAW_DIR) if is_valid_r_filename(f)],
+        reverse=True,
+    )
     file_info = []
     for fname in raw_files:
         m = re.search(r"R(\d{14})$", fname)
         ts = datetime.strptime(m.group(1), "%Y%m%d%H%M%S") if m else None
         size_kb = os.path.getsize(os.path.join(RAW_DIR, fname)) // 1024
         file_info.append({"name": fname, "ts": ts, "size_kb": size_kb})
-    return render_template("reprocess.html", files=file_info)
+
+    per_page = 20
+    total_files = len(file_info)
+    total_pages = max(1, (total_files + per_page - 1) // per_page)
+    try:
+        page = int(request.args.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    page_files = file_info[start:start + per_page]
+
+    return render_template(
+        "reprocess.html",
+        files=page_files,
+        total_files=total_files,
+        page=page,
+        total_pages=total_pages,
+        per_page=per_page,
+    )
 
 
 @app.route("/api/reprocess", methods=["POST"])
