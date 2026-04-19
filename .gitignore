@@ -19,7 +19,7 @@ bigeminy_timeline.html
 ecg_timeline.html
 
 # Models (large binaries)
-models/
+#models/
 
 # Import folder (device files)
 import/
