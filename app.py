@@ -84,6 +84,7 @@ RAW_CHUNK_ROW_GROUP = 60   # 60 chunks = 10-minute row group
 _model = None
 _model_status = "loading"   # "loading" | "ready" | "error"
 _model_error = None
+_model_ready_event = threading.Event()
 
 
 def _load_model_bg():
@@ -98,16 +99,27 @@ def _load_model_bg():
         log.error("Model load failed: %s", exc)
         _model_error = str(exc)
         _model_status = "error"
+    finally:
+        _model_ready_event.set()
 
 
 threading.Thread(target=_load_model_bg, daemon=True).start()
 
 
-def get_model():
+def get_model(on_progress=None):
+    """Return the loaded model, blocking until it becomes ready.
+
+    If the model is still loading, wait for it rather than failing. A progress
+    callback may be provided to surface a "waiting" message to the caller.
+    """
+    if _model_status == "loading":
+        msg = "Model is still loading — waiting for it to become ready…"
+        log.info(msg)
+        if on_progress:
+            on_progress(msg)
+        _model_ready_event.wait()
     if _model_status == "ready":
         return _model
-    if _model_status == "loading":
-        raise RuntimeError("Model is still loading — please wait a moment and try again.")
     raise RuntimeError(f"Model failed to load: {_model_error}")
 
 
@@ -483,7 +495,8 @@ def analyse_files(filepaths, on_progress=None):
             continue
 
         emit("  Classifying beats…")
-        beat_classes, beat_probs = classify_beats(ecg_100, peaks, get_model(),
+        model = get_model(on_progress=emit)
+        beat_classes, beat_probs = classify_beats(ecg_100, peaks, model,
                                                   on_progress=on_progress)
 
         n_normal = int(np.sum(beat_classes == 0))
