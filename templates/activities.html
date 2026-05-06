@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Activities — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+
+  .upload-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 22px; margin-bottom: 20px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .upload-card .file-input { background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; padding: 14px 16px; font-size: 13px; color: var(--text-dim); cursor: pointer; flex: 1; min-width: 240px; }
+  .upload-card .file-input:hover { border-color: var(--accent); color: var(--text); }
+  .btn { border: none; border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: 0.85; }
+  .btn-primary:disabled { opacity: 0.45; cursor: default; }
+  .upload-msg { font-size: 13px; color: var(--text-dim); }
+  .upload-msg.ok { color: var(--ok); }
+  .upload-msg.err { color: var(--danger); }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0; }
+  table.act { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.act th, table.act td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  table.act th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); font-weight: 600; background: var(--bg); }
+  table.act tbody tr:last-child td { border-bottom: none; }
+  table.act tbody tr:hover { background: rgba(108,140,255,0.05); }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--bg); color: var(--text-dim); border: 1px solid var(--border); }
+  .pill.ride { background: rgba(76,110,245,0.12); color: var(--accent); border-color: rgba(76,110,245,0.3); }
+  .pill.run  { background: rgba(22,163,74,0.12);  color: var(--ok);     border-color: rgba(22,163,74,0.3); }
+  .pill.rowing,.pill.row { background: rgba(217,119,6,0.12); color: var(--warn); border-color: rgba(217,119,6,0.3); }
+  .view-btn { display: inline-block; padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; text-decoration: none; transition: background 0.15s, color 0.15s; }
+  .view-btn:hover { background: var(--accent); color: #fff; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--text-dim); font-size: 14px; }
+  .summary-line { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+{% endblock %}
+
+{% block content %}
+<h1>Activities</h1>
+<div class="subtitle">Upload your Strava activities CSV and view ECG reports for each session.</div>
+
+<div class="upload-card">
+  <label class="file-input" for="csvFile" id="fileLabel">
+    <strong>Choose CSV file</strong> &mdash; drag &amp; drop or click to browse
+  </label>
+  <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none" onchange="onFilePicked()">
+  <button class="btn btn-primary" id="uploadBtn" onclick="uploadCsv()" disabled>Upload</button>
+  <span class="upload-msg" id="uploadMsg"></span>
+</div>
+
+<div class="summary-line" id="summaryLine"></div>
+
+<div class="panel">
+  <table class="act">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Type</th>
+        <th>Title</th>
+        <th>Duration</th>
+        <th>Distance</th>
+        <th>Elevation</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="actTbody">
+      <tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+function formatDuration(sec) {
+  sec = Number(sec) || 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return h + 'h ' + String(m).padStart(2,'0') + 'm';
+  return m + 'm ' + String(s).padStart(2,'0') + 's';
+}
+function typePillClass(t) {
+  return (t || '').toLowerCase().replace(/\s+/g, '-');
+}
+
+async function loadActivities() {
+  const tbody = document.getElementById('actTbody');
+  try {
+    const res = await fetch('/api/activities');
+    const j = await res.json();
+    const acts = j.activities || [];
+    if (acts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No activities yet &mdash; upload a Strava CSV above to get started.</td></tr>';
+      document.getElementById('summaryLine').textContent = '';
+      return;
+    }
+    tbody.innerHTML = '';
+    for (const a of acts) {
+      const tr = document.createElement('tr');
+      const cls = typePillClass(a.activity_type);
+      tr.innerHTML =
+        '<td>' + escapeHtml(a.date) + '</td>' +
+        '<td><span class="pill ' + cls + '">' + escapeHtml(a.activity_type) + '</span></td>' +
+        '<td>' + escapeHtml(a.title) + '</td>' +
+        '<td>' + formatDuration(a.duration_seconds) + '</td>' +
+        '<td>' + escapeHtml(a.distance) + '</td>' +
+        '<td>' + escapeHtml(a.elevation) + '</td>' +
+        '<td><a class="view-btn" href="/activities/' + encodeURIComponent(a.activity_id) + '">View report</a></td>';
+      tbody.appendChild(tr);
+    }
+    document.getElementById('summaryLine').textContent = acts.length + ' activit' + (acts.length === 1 ? 'y' : 'ies') + ' on file.';
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:var(--danger)">Failed to load: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
+function onFilePicked() {
+  const f = document.getElementById('csvFile').files[0];
+  const label = document.getElementById('fileLabel');
+  const btn = document.getElementById('uploadBtn');
+  if (f) {
+    label.innerHTML = '<strong>' + escapeHtml(f.name) + '</strong> &mdash; ' + (f.size / 1024).toFixed(1) + ' KB';
+    btn.disabled = false;
+  } else {
+    label.innerHTML = '<strong>Choose CSV file</strong> &mdash; drag &amp; drop or click to browse';
+    btn.disabled = true;
+  }
+}
+
+async function uploadCsv() {
+  const f = document.getElementById('csvFile').files[0];
+  if (!f) return;
+  const btn = document.getElementById('uploadBtn');
+  const msg = document.getElementById('uploadMsg');
+  btn.disabled = true;
+  msg.className = 'upload-msg';
+  msg.textContent = 'Uploading…';
+  try {
+    const fd = new FormData();
+    fd.append('file', f);
+    const res = await fetch('/api/activities/upload', { method: 'POST', body: fd });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+    msg.className = 'upload-msg ok';
+    msg.textContent = 'Added ' + j.added + ', skipped ' + j.skipped + ' duplicate' + (j.skipped === 1 ? '' : 's') + '. ' + j.total + ' total.';
+    document.getElementById('csvFile').value = '';
+    onFilePicked();
+    loadActivities();
+  } catch (e) {
+    msg.className = 'upload-msg err';
+    msg.textContent = 'Error: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+// Drag-and-drop on the label
+(function setupDnD() {
+  const label = document.getElementById('fileLabel');
+  ['dragenter','dragover'].forEach(ev => label.addEventListener(ev, e => {
+    e.preventDefault(); label.style.borderColor = 'var(--accent)';
+  }));
+  ['dragleave','drop'].forEach(ev => label.addEventListener(ev, e => {
+    e.preventDefault(); label.style.borderColor = '';
+  }));
+  label.addEventListener('drop', e => {
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      document.getElementById('csvFile').files = e.dataTransfer.files;
+      onFilePicked();
+    }
+  });
+})();
+
+loadActivities();
+</script>
+{% endblock %}

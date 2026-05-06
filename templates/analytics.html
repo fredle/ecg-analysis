@@ -196,6 +196,19 @@ function drawChart() {
   barRects=[];
   var n=chartData.length, slotW=cW/n, barW=Math.max(slotW*0.7,1), barGap=(slotW-barW)/2;
 
+  // Night-time shading (22:00 - 06:00) when viewing by hour
+  if (granularity==='hour') {
+    ctx.fillStyle='rgba(15, 23, 42, 0.06)';
+    for (var ni=0; ni<n; ni++) {
+      var b=chartData[ni].bucket;
+      if (b.length<13) continue;
+      var hr=parseInt(b.substring(11,13),10);
+      if (!isNaN(hr) && (hr>=22 || hr<6)) {
+        ctx.fillRect(PAD_L+ni*slotW, PAD_T, slotW, cH);
+      }
+    }
+  }
+
   // Vertical grid lines drawn first (behind bars)
   ctx.lineWidth=1; ctx.setLineDash([4,4]); ctx.strokeStyle='#b0b8d0';
   if (granularity==='hour') {

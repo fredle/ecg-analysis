@@ -40,6 +40,7 @@ HOURLY_PARQUET_PATH = os.path.join(DATA_DIR, "hourly_hr.parquet")
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "beat-3-eff-sm")
 MODEL_PATH = os.path.join(MODEL_DIR, "model.keras")
 UPLOAD_REGISTRY_PATH = os.path.join(DATA_DIR, "upload_registry.json")
+ACTIVITIES_PARQUET_PATH = os.path.join(DATA_DIR, "activities.parquet")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
@@ -1532,6 +1533,234 @@ def api_pvc_burden():
         })
 
     return jsonify({"data": data, "granularity": granularity})
+
+
+# ---------------------------------------------------------------------------
+# Strava activities
+# ---------------------------------------------------------------------------
+ACTIVITY_COLUMNS = [
+    "activity_id", "activity_type", "date", "title",
+    "duration_seconds", "distance", "elevation", "url",
+]
+
+
+def _parse_strava_duration(s: str) -> int:
+    """Parse 'MM:SS' or 'HH:MM:SS' into total seconds."""
+    parts = str(s).strip().split(":")
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + int(parts[1])
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    raise ValueError(f"Unrecognised duration: {s!r}")
+
+
+def _extract_strava_id(url: str) -> str:
+    m = re.search(r"/activities/(\d+)", str(url or ""))
+    if not m:
+        raise ValueError(f"Cannot extract activity id from URL: {url!r}")
+    return m.group(1)
+
+
+def _load_activities() -> pd.DataFrame:
+    if not os.path.isfile(ACTIVITIES_PARQUET_PATH):
+        return pd.DataFrame(columns=ACTIVITY_COLUMNS)
+    df = pd.read_parquet(ACTIVITIES_PARQUET_PATH)
+    df["activity_id"] = df["activity_id"].astype(str)
+    return df
+
+
+def _save_activities(df: pd.DataFrame) -> None:
+    df.to_parquet(ACTIVITIES_PARQUET_PATH, index=False)
+
+
+def _parse_strava_csv(text: str) -> pd.DataFrame:
+    import io
+    df = pd.read_csv(io.StringIO(text))
+    expected = {"Activity Type", "Date", "Title", "Duration", "Distance", "Elevation", "URL"}
+    missing = expected - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
+    out = pd.DataFrame({
+        "activity_id":      df["URL"].map(_extract_strava_id).astype(str),
+        "activity_type":    df["Activity Type"].astype(str),
+        "date":             df["Date"].astype(str),
+        "title":            df["Title"].astype(str),
+        "duration_seconds": df["Duration"].map(_parse_strava_duration).astype(int),
+        "distance":         df["Distance"].astype(str),
+        "elevation":        df["Elevation"].astype(str),
+        "url":              df["URL"].astype(str),
+    })
+    return out.drop_duplicates(subset=["activity_id"], keep="first")
+
+
+def _guess_start_hour(title: str) -> int:
+    t = (title or "").lower()
+    if "morning" in t:   return 8
+    if "lunch" in t:     return 12
+    if "afternoon" in t: return 14
+    if "evening" in t:   return 18
+    if "night" in t:     return 21
+    return 12
+
+
+@app.route("/activities")
+def activities_page():
+    return render_template("activities.html")
+
+
+@app.route("/api/activities")
+def api_activities_list():
+    df = _load_activities()
+    if df.empty:
+        return jsonify({"activities": []})
+    df = df.sort_values("date", ascending=False)
+    return jsonify({"activities": df.to_dict(orient="records")})
+
+
+@app.route("/api/activities/upload", methods=["POST"])
+def api_activities_upload():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No file selected"}), 400
+    try:
+        text = f.read().decode("utf-8-sig")
+        parsed = _parse_strava_csv(text)
+    except Exception as exc:
+        return jsonify({"error": f"Could not parse CSV: {exc}"}), 400
+
+    existing = _load_activities()
+    existing_ids = set(existing["activity_id"]) if not existing.empty else set()
+    new_df = parsed[~parsed["activity_id"].isin(existing_ids)]
+    n_total = len(parsed)
+    n_new = len(new_df)
+    n_dup = n_total - n_new
+
+    if n_new > 0:
+        combined = pd.concat([existing, new_df], ignore_index=True)
+        combined = combined.drop_duplicates(subset=["activity_id"], keep="first")
+        _save_activities(combined)
+        log.info("Activities CSV: added %d, skipped %d duplicates", n_new, n_dup)
+
+    return jsonify({
+        "added": n_new,
+        "skipped": n_dup,
+        "total": int(len(_load_activities())),
+    })
+
+
+@app.route("/activities/<activity_id>")
+def activity_detail_page(activity_id):
+    df = _load_activities()
+    if df.empty or activity_id not in set(df["activity_id"]):
+        flash("Activity not found.", "error")
+        return redirect(url_for("activities_page"))
+    activity = df[df["activity_id"] == activity_id].iloc[0].to_dict()
+    activity["activity_id"] = str(activity["activity_id"])
+    activity["duration_seconds"] = int(activity["duration_seconds"])
+    return render_template("activity_report.html",
+                           activity=activity,
+                           activity_json=json.dumps(activity),
+                           default_start_hour=_guess_start_hour(activity["title"]))
+
+
+@app.route("/api/activities/<activity_id>/report")
+def api_activity_report(activity_id):
+    """Aggregated HR / episode / beat-count report for an activity window."""
+    df = _load_activities()
+    if df.empty or activity_id not in set(df["activity_id"]):
+        return jsonify({"error": "Activity not found"}), 404
+    activity = df[df["activity_id"] == activity_id].iloc[0].to_dict()
+
+    start_param = (request.args.get("start") or "").strip()
+    if start_param:
+        try:
+            start_dt = datetime.fromisoformat(start_param)
+        except ValueError:
+            return jsonify({"error": f"Invalid start: {start_param!r}"}), 400
+    else:
+        start_dt = datetime.fromisoformat(str(activity["date"])).replace(
+            hour=_guess_start_hour(activity["title"]))
+
+    duration_sec = int(activity["duration_seconds"])
+    try:
+        recovery_min = max(0, min(240, int(request.args.get("recovery", 0))))
+    except ValueError:
+        recovery_min = 0
+
+    end_dt = start_dt + timedelta(seconds=duration_sec)
+    window_end = end_dt + timedelta(minutes=recovery_min)
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Hourly buckets in [start - 5m, window_end] ────────────────────────
+    hourly = []
+    if os.path.isfile(HOURLY_PARQUET_PATH):
+        con = duckdb.connect()
+        try:
+            rows = con.execute(
+                "SELECT hour_start, total_beats, normal_beats, pac_beats, pvc_beats, "
+                "       duration_seconds, hr_bpm "
+                "FROM read_parquet(?) "
+                "WHERE hour_start >= ?::TIMESTAMP "
+                "  AND hour_start <  ?::TIMESTAMP "
+                "ORDER BY hour_start",
+                [HOURLY_PARQUET_PATH,
+                 (start_dt - timedelta(seconds=BUCKET_SEC)).strftime("%Y-%m-%d %H:%M:%S"),
+                 window_end.strftime("%Y-%m-%d %H:%M:%S")]
+            ).fetchdf()
+        finally:
+            con.close()
+        for _, r in rows.iterrows():
+            n = int(r["total_beats"])
+            if "hr_bpm" in r and r["hr_bpm"] and float(r["hr_bpm"]) > 0:
+                hr = round(float(r["hr_bpm"]), 1)
+            else:
+                d = float(r["duration_seconds"]) if float(r["duration_seconds"]) > 0 else BUCKET_SEC
+                hr = round((n / d) * 60, 1) if d > 0 and n > 0 else 0
+            hourly.append({
+                "ts": str(r["hour_start"]),
+                "total_beats": n,
+                "pvc_beats": int(r["pvc_beats"]),
+                "duration_seconds": float(r["duration_seconds"]),
+                "hr_bpm": hr,
+            })
+
+    # ── Episodes in window ────────────────────────────────────────────────
+    episodes = query_episodes(
+        start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        window_end.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    # ── Activity-only stats (exclude recovery buckets) ────────────────────
+    act_buckets = [h for h in hourly if h["ts"] < end_str]
+    valid_hr = [h["hr_bpm"] for h in act_buckets if h["hr_bpm"] > 0]
+    total_beats = sum(h["total_beats"] for h in act_buckets)
+    pvc_beats   = sum(h["pvc_beats"]   for h in act_buckets)
+    activity_episodes = [e for e in episodes if e["start_time"] < end_str]
+
+    summary = {
+        "start_time":       start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "end_time":         end_str,
+        "window_end":       window_end.strftime("%Y-%m-%d %H:%M:%S"),
+        "duration_seconds": duration_sec,
+        "recovery_minutes": recovery_min,
+        "avg_hr":           round(sum(valid_hr) / len(valid_hr), 1) if valid_hr else 0,
+        "peak_hr":          max(valid_hr) if valid_hr else 0,
+        "min_hr":           min(valid_hr) if valid_hr else 0,
+        "total_beats":      total_beats,
+        "pvc_beats":        pvc_beats,
+        "pvc_burden":       round(pvc_beats / total_beats * 100, 2) if total_beats > 0 else 0,
+        "episode_count":    len(activity_episodes),
+        "has_data":         bool(act_buckets),
+    }
+
+    return jsonify({
+        "activity": {k: (str(v) if k == "activity_id" else v) for k, v in activity.items()},
+        "summary":  summary,
+        "hourly":   hourly,
+        "episodes": episodes,
+    })
 
 
 # ---------------------------------------------------------------------------

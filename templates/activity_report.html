@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+{% block title %}{{ activity.title }} — Activity Report{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 20px; }
+  .back-link { font-size: 13px; color: var(--accent); text-decoration: none; }
+  .back-link:hover { text-decoration: underline; }
+
+  .controls { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; }
+  .controls label { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 4px; }
+  .controls input[type="datetime-local"], .controls input[type="number"] { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; }
+  .controls input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+  .toggle input { accent-color: var(--accent); }
+  .btn { border: none; border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: 0.85; }
+  .info-line { font-size: 12px; color: var(--text-dim); align-self: flex-end; margin-left: auto; }
+
+  .summary-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; flex: 1; min-width: 120px; }
+  .stat-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 4px; }
+  .stat-card .value { font-size: 22px; font-weight: 700; }
+  .stat-card .unit { font-size: 12px; font-weight: 400; color: var(--text-dim); }
+  .stat-card.danger .value { color: var(--danger); }
+  .stat-card.accent .value { color: var(--accent); }
+  .stat-card.ok .value { color: var(--ok); }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 20px; }
+  .section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+  .section-hint { font-size: 11px; color: var(--text-dim); margin-left: auto; font-weight: 400; }
+
+  .chart-wrap { position: relative; width: 100%; }
+  canvas#hrChart { display: block; width: 100%; }
+
+  .ep-list { display: flex; flex-direction: column; gap: 6px; }
+  .ep-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px; }
+  .ep-row .ep-type { font-weight: 600; min-width: 80px; }
+  .ep-row .ep-time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .ep-row .ep-meta { color: var(--text-dim); margin-left: auto; font-size: 12px; }
+  .ep-row a { color: var(--accent); text-decoration: none; font-weight: 600; font-size: 12px; }
+  .ep-row a:hover { text-decoration: underline; }
+  .ep-row.bigeminy  { border-left: 3px solid var(--c-bigeminy); }
+  .ep-row.vtach     { border-left: 3px solid var(--c-vtach); }
+  .ep-row.trigeminy { border-left: 3px solid var(--c-trigeminy); }
+  .ep-row.couplet   { border-left: 3px solid var(--c-couplet); }
+  .empty-state { text-align: center; color: var(--text-dim); padding: 30px 0; font-size: 13px; }
+
+  .tooltip { display: none; position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; line-height: 1.6; z-index: 1000; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.1); font-variant-numeric: tabular-nums; }
+  .tooltip.visible { display: block; }
+{% endblock %}
+
+{% block content %}
+<a href="/activities" class="back-link">&larr; All activities</a>
+<h1 style="margin-top:6px">{{ activity.title }}</h1>
+<div class="subtitle">
+  {{ activity.activity_type }} &middot; {{ activity.date }} &middot;
+  {{ activity.distance }} &middot; {{ activity.elevation }} elev
+</div>
+
+<div class="controls">
+  <label>Activity start time
+    <input type="datetime-local" id="startTime" step="60">
+  </label>
+  <label class="toggle" style="margin-bottom:0">
+    <input type="checkbox" id="recoveryToggle"> Show recovery
+  </label>
+  <label id="recoveryMinsLabel" style="display:none">Recovery (min)
+    <input type="number" id="recoveryMins" min="0" max="240" step="5" value="60" style="width:80px">
+  </label>
+  <button class="btn btn-primary" onclick="loadReport()">Update</button>
+  <span class="info-line" id="durationHint"></span>
+</div>
+
+<div class="summary-row" id="summaryRow"></div>
+
+<div class="panel">
+  <div class="section-title">
+    Heart rate
+    <span class="section-hint" id="hrHint"></span>
+  </div>
+  <div class="chart-wrap">
+    <canvas id="hrChart"></canvas>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="section-title">
+    Arrhythmia episodes
+    <span class="section-hint" id="epHint"></span>
+  </div>
+  <div id="episodesList"><div class="empty-state">Loading&hellip;</div></div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const ACTIVITY = {{ activity_json|safe }};
+const DEFAULT_START_HOUR = {{ default_start_hour }};
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+function formatDuration(sec) {
+  sec = Number(sec) || 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return h + 'h ' + pad2(m) + 'm';
+  return m + 'm ' + pad2(s) + 's';
+}
+function isoLocal(d) {
+  return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate())
+       + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+
+function defaultStartIso() {
+  const d = new Date(ACTIVITY.date + 'T00:00:00');
+  d.setHours(DEFAULT_START_HOUR, 0, 0, 0);
+  return isoLocal(d);
+}
+
+function initControls() {
+  const params = new URLSearchParams(window.location.search);
+  document.getElementById('startTime').value = params.get('start') || defaultStartIso();
+  const rec = params.get('recovery');
+  if (rec && Number(rec) > 0) {
+    document.getElementById('recoveryToggle').checked = true;
+    document.getElementById('recoveryMins').value = Number(rec);
+    document.getElementById('recoveryMinsLabel').style.display = '';
+  }
+  document.getElementById('recoveryToggle').addEventListener('change', e => {
+    document.getElementById('recoveryMinsLabel').style.display = e.target.checked ? '' : 'none';
+  });
+  document.getElementById('durationHint').textContent =
+    'Activity duration: ' + formatDuration(ACTIVITY.duration_seconds);
+}
+
+function statCard(label, value, unit, cls) {
+  return '<div class="stat-card ' + (cls || '') + '">'
+       + '<div class="label">' + escapeHtml(label) + '</div>'
+       + '<div class="value">' + value + (unit ? ' <span class="unit">' + unit + '</span>' : '') + '</div>'
+       + '</div>';
+}
+
+function renderSummary(s) {
+  const row = document.getElementById('summaryRow');
+  if (!s.has_data) {
+    row.innerHTML = '<div class="stat-card" style="flex:1"><div class="label">No ECG data</div>'
+                  + '<div class="value" style="font-size:14px;font-weight:500;color:var(--text-dim)">'
+                  + 'No recordings overlap this activity window. Try adjusting the start time.</div></div>';
+    return;
+  }
+  let html = '';
+  html += statCard('Avg HR',  s.avg_hr,  'bpm', 'accent');
+  html += statCard('Peak HR', s.peak_hr, 'bpm', 'danger');
+  html += statCard('Min HR',  s.min_hr,  'bpm', 'ok');
+  html += statCard('Total beats', s.total_beats.toLocaleString(), '', '');
+  html += statCard('PVC beats', s.pvc_beats.toLocaleString(), '', s.pvc_beats > 0 ? 'danger' : '');
+  html += statCard('PVC burden', s.pvc_burden, '%', s.pvc_burden >= 5 ? 'danger' : '');
+  html += statCard('Episodes', s.episode_count, '', s.episode_count > 0 ? 'danger' : '');
+  row.innerHTML = html;
+}
+
+let hrChartData = null;
+function drawHrChart() {
+  const canvas = document.getElementById('hrChart');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth;
+  const H = 280;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const PAD_L = 48, PAD_R = 16, PAD_T = 14, PAD_B = 36;
+  const cW = W - PAD_L - PAD_R;
+  const cH = H - PAD_T - PAD_B;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!hrChartData || hrChartData.points.length === 0) {
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No heart rate data for this window', W/2, H/2);
+    return;
+  }
+
+  const { points, startMs, endMs, activityEndMs } = hrChartData;
+  const hrs = points.map(p => p.hr).filter(h => h > 0);
+  let yMin = Math.max(30, Math.min.apply(null, hrs) - 10);
+  let yMax = Math.min(220, Math.max.apply(null, hrs) + 10);
+  if (yMax - yMin < 20) yMax = yMin + 20;
+
+  const xOf = ms => PAD_L + ((ms - startMs) / (endMs - startMs)) * cW;
+  const yOf = hr => PAD_T + cH - ((hr - yMin) / (yMax - yMin)) * cH;
+
+  // Recovery shading
+  if (activityEndMs < endMs) {
+    ctx.fillStyle = 'rgba(76,110,245,0.06)';
+    ctx.fillRect(xOf(activityEndMs), PAD_T, xOf(endMs) - xOf(activityEndMs), cH);
+    ctx.fillStyle = '#4c6ef5';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('Recovery', xOf(activityEndMs) + 4, PAD_T + 12);
+  }
+
+  // Y-axis gridlines + labels
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#6b7280';
+  ctx.textAlign = 'right';
+  const yStep = (yMax - yMin) <= 60 ? 10 : (yMax - yMin) <= 120 ? 20 : 30;
+  for (let hr = Math.ceil(yMin / yStep) * yStep; hr <= yMax; hr += yStep) {
+    const y = yOf(hr);
+    ctx.strokeStyle = '#e4e7f0';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + cW, y); ctx.stroke();
+    ctx.fillText(hr, PAD_L - 6, y + 4);
+  }
+
+  // Activity-end marker
+  if (activityEndMs > startMs && activityEndMs < endMs) {
+    ctx.strokeStyle = 'rgba(76,110,245,0.7)';
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(xOf(activityEndMs), PAD_T);
+    ctx.lineTo(xOf(activityEndMs), PAD_T + cH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // X-axis time labels (4–6 ticks)
+  const totalMs = endMs - startMs;
+  const tickCount = Math.max(2, Math.min(6, Math.floor(cW / 90)));
+  ctx.fillStyle = '#6b7280';
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= tickCount; i++) {
+    const ms = startMs + (totalMs * i / tickCount);
+    const x = xOf(ms);
+    const d = new Date(ms);
+    ctx.fillText(pad2(d.getHours()) + ':' + pad2(d.getMinutes()), x, PAD_T + cH + 16);
+  }
+
+  // HR line
+  ctx.strokeStyle = '#dc2626';
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  let started = false;
+  for (const p of points) {
+    if (p.hr <= 0) { started = false; continue; }
+    const x = xOf(p.ms);
+    const y = yOf(p.hr);
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // HR dots
+  ctx.fillStyle = '#dc2626';
+  for (const p of points) {
+    if (p.hr <= 0) continue;
+    ctx.beginPath();
+    ctx.arc(xOf(p.ms), yOf(p.hr), 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Border
+  ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(PAD_L, PAD_T, cW, cH);
+
+  // Y-axis label
+  ctx.save();
+  ctx.translate(12, PAD_T + cH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#6b7280';
+  ctx.fillText('Heart rate (bpm)', 0, 0);
+  ctx.restore();
+
+  canvas._chartInfo = { points, startMs, endMs, xOf, yOf, PAD_L, PAD_R, cW, cH, yMin, yMax };
+}
+
+function setupHover() {
+  const canvas = document.getElementById('hrChart');
+  const tip = document.getElementById('tooltip');
+  canvas.onmousemove = function(evt) {
+    if (!canvas._chartInfo) return;
+    const info = canvas._chartInfo;
+    const rect = canvas.getBoundingClientRect();
+    const mx = evt.clientX - rect.left;
+    if (mx < info.PAD_L || mx > info.PAD_L + info.cW) { tip.classList.remove('visible'); return; }
+    const frac = (mx - info.PAD_L) / info.cW;
+    const ms = info.startMs + frac * (info.endMs - info.startMs);
+    let nearest = null, best = Infinity;
+    for (const p of info.points) {
+      const d = Math.abs(p.ms - ms);
+      if (d < best) { best = d; nearest = p; }
+    }
+    if (!nearest || nearest.hr <= 0) { tip.classList.remove('visible'); return; }
+    const t = new Date(nearest.ms);
+    tip.innerHTML = '<strong>' + nearest.hr + ' bpm</strong><br>'
+                  + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ':' + pad2(t.getSeconds())
+                  + '<br>Beats: ' + nearest.total_beats
+                  + (nearest.pvc_beats ? '<br>PVC: <strong style="color:var(--danger)">' + nearest.pvc_beats + '</strong>' : '');
+    tip.classList.add('visible');
+    let tx = evt.clientX + 14, ty = evt.clientY - 10;
+    const tr = tip.getBoundingClientRect();
+    if (tx + tr.width > window.innerWidth - 10) tx = evt.clientX - tr.width - 14;
+    tip.style.left = tx + 'px';
+    tip.style.top = ty + 'px';
+  };
+  canvas.onmouseleave = () => tip.classList.remove('visible');
+}
+
+function renderEpisodes(eps, activityEndStr) {
+  const list = document.getElementById('episodesList');
+  if (eps.length === 0) {
+    list.innerHTML = '<div class="empty-state">No arrhythmia episodes during this window.</div>';
+    return;
+  }
+  let html = '<div class="ep-list">';
+  for (const e of eps) {
+    const inRecovery = activityEndStr && e.start_time >= activityEndStr;
+    const tStart = e.start_time.substring(11, 19);
+    const url = '/viewer?t=' + encodeURIComponent(e.start_time.substring(0, 19).replace(' ', 'T'));
+    html += '<div class="ep-row ' + escapeHtml(e.episode_type) + '">'
+         +    '<span class="ep-type">' + escapeHtml(e.episode_type) + '</span>'
+         +    '<span class="ep-time">' + tStart + '</span>'
+         +    '<span class="ep-meta">'
+         +      e.duration_seconds.toFixed(1) + 's &middot; '
+         +      e.total_beats + ' beats &middot; '
+         +      e.pvc_beats + ' PVC'
+         +      (inRecovery ? ' &middot; <em>recovery</em>' : '')
+         +    '</span>'
+         +    '<a href="' + url + '">View ECG &rarr;</a>'
+         +  '</div>';
+  }
+  html += '</div>';
+  list.innerHTML = html;
+}
+
+async function loadReport() {
+  const start = document.getElementById('startTime').value;
+  const useRecovery = document.getElementById('recoveryToggle').checked;
+  const recovery = useRecovery ? Number(document.getElementById('recoveryMins').value || 0) : 0;
+
+  // Update URL so the view is shareable
+  const params = new URLSearchParams();
+  if (start) params.set('start', start);
+  if (recovery > 0) params.set('recovery', String(recovery));
+  history.replaceState(null, '', '?' + params.toString());
+
+  let url = '/api/activities/' + encodeURIComponent(ACTIVITY.activity_id) + '/report';
+  const q = [];
+  if (start) q.push('start=' + encodeURIComponent(start));
+  if (recovery > 0) q.push('recovery=' + recovery);
+  if (q.length) url += '?' + q.join('&');
+
+  document.getElementById('summaryRow').innerHTML = '';
+  document.getElementById('episodesList').innerHTML = '<div class="empty-state">Loading&hellip;</div>';
+
+  try {
+    const res = await fetch(url);
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+
+    renderSummary(j.summary);
+
+    const startMs = new Date(j.summary.start_time.replace(' ', 'T')).getTime();
+    const activityEndMs = new Date(j.summary.end_time.replace(' ', 'T')).getTime();
+    const endMs = new Date(j.summary.window_end.replace(' ', 'T')).getTime();
+    const points = (j.hourly || []).map(h => ({
+      ms: new Date(h.ts.replace(' ', 'T')).getTime(),
+      hr: h.hr_bpm,
+      total_beats: h.total_beats,
+      pvc_beats: h.pvc_beats,
+    })).filter(p => p.ms >= startMs && p.ms < endMs);
+    hrChartData = { points, startMs, endMs, activityEndMs };
+    drawHrChart();
+    setupHover();
+
+    document.getElementById('hrHint').textContent =
+      points.length ? points.length + ' × 5-min buckets' : '';
+    document.getElementById('epHint').textContent =
+      j.episodes.length ? j.episodes.length + ' total' : '';
+
+    renderEpisodes(j.episodes || [], j.summary.end_time);
+  } catch (e) {
+    document.getElementById('summaryRow').innerHTML =
+      '<div class="stat-card" style="flex:1"><div class="label">Error</div>'
+      + '<div class="value" style="font-size:14px;color:var(--danger)">' + escapeHtml(e.message) + '</div></div>';
+    document.getElementById('episodesList').innerHTML = '';
+  }
+}
+
+window.addEventListener('resize', () => { if (hrChartData) drawHrChart(); });
+
+initControls();
+loadReport();
+</script>
+{% endblock %}
