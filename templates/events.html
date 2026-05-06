@@ -48,7 +48,7 @@
   <label>Event
     <input type="text" id="newEvent" maxlength="500" placeholder="e.g. Started new medication">
   </label>
-  <button class="btn btn-primary" onclick="createEvent()">Add event</button>
+  <button class="btn btn-primary" onclick="addEvent()">Add event</button>
   <span class="msg" id="msg"></span>
 </div>
 
@@ -113,7 +113,7 @@ async function loadEvents() {
   }
 }
 
-async function createEvent() {
+async function addEvent() {
   const date = document.getElementById('newDate').value;
   const text = document.getElementById('newEvent').value.trim();
   if (!date || !text) { setMsg('Both date and event text are required.', 'err'); return; }
@@ -186,7 +186,7 @@ async function deleteEvent(btn, id) {
 }
 
 document.getElementById('newEvent').addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); createEvent(); }
+  if (e.key === 'Enter') { e.preventDefault(); addEvent(); }
 });
 
 loadEvents();
