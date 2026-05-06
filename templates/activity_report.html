@@ -49,6 +49,28 @@
 
   .tooltip { display: none; position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; line-height: 1.6; z-index: 1000; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.1); font-variant-numeric: tabular-nums; }
   .tooltip.visible { display: block; }
+
+  /* ── ECG strip ── */
+  .ecg-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .btn-nav { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px; font-family: inherit; cursor: pointer; transition: background 0.15s; }
+  .btn-nav:hover { background: var(--border); }
+  .btn-nav:disabled { opacity: 0.4; cursor: default; }
+  .ecg-zoom-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); margin-left: auto; }
+  .ecg-zoom-label select { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; font-size: 12px; color: var(--text); font-family: inherit; }
+  .ecg-strip-wrap { position: relative; width: 100%; background: #fffaf9; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .ecg-strip-wrap canvas { display: block; width: 100%; cursor: grab; user-select: none; }
+  .ecg-strip-wrap canvas.dragging { cursor: grabbing; }
+  .ecg-overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; pointer-events: none; }
+  .ecg-overlay.visible { display: flex; }
+  .ecg-msg { background: rgba(255,255,255,0.92); border: 1px solid var(--border); border-radius: 8px; padding: 10px 18px; font-size: 13px; color: var(--text-dim); }
+  .ecg-msg .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ecg-scrub { position: relative; height: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; margin-top: 10px; cursor: pointer; }
+  .ecg-scrub-recovery { position: absolute; top: 0; bottom: 0; right: 0; background: rgba(76,110,245,0.06); pointer-events: none; }
+  .ecg-scrub-window { position: absolute; top: 1px; bottom: 1px; background: rgba(76,110,245,0.35); border: 1px solid var(--accent); border-radius: 3px; pointer-events: none; min-width: 4px; }
+  .ecg-scrub-marks { position: absolute; inset: 0; pointer-events: none; }
+  .ecg-scrub-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(220,38,38,0.55); }
+  .ecg-hint { font-size: 11px; color: var(--text-dim); margin-top: 6px; text-align: center; }
 {% endblock %}
 
 {% block content %}
@@ -82,6 +104,41 @@
   </div>
   <div class="chart-wrap">
     <canvas id="hrChart"></canvas>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="section-title">
+    ECG strip
+    <span class="section-hint" id="ecgStripLabel"></span>
+  </div>
+  <div class="ecg-toolbar">
+    <button class="btn-nav" type="button" onclick="ecgStripPan(-30)">&larr; 30 s</button>
+    <button class="btn-nav" type="button" onclick="ecgStripPan(-10)">&larr; 10 s</button>
+    <button class="btn-nav" type="button" onclick="ecgStripPan(10)">10 s &rarr;</button>
+    <button class="btn-nav" type="button" onclick="ecgStripPan(30)">30 s &rarr;</button>
+    <label class="ecg-zoom-label">Window
+      <select id="ecgWindow" onchange="ecgStripZoom()">
+        <option value="10">10 s</option>
+        <option value="30" selected>30 s</option>
+        <option value="60">60 s</option>
+        <option value="120">120 s</option>
+      </select>
+    </label>
+  </div>
+  <div class="ecg-strip-wrap">
+    <canvas id="ecgStripCanvas" height="240"></canvas>
+    <div class="ecg-overlay" id="ecgStripOverlay">
+      <div class="ecg-msg" id="ecgStripMsg"><span class="spinner"></span>Loading&hellip;</div>
+    </div>
+  </div>
+  <div class="ecg-scrub" id="ecgScrub" title="Click to seek">
+    <div class="ecg-scrub-recovery" id="ecgScrubRecovery"></div>
+    <div class="ecg-scrub-marks" id="ecgScrubMarks"></div>
+    <div class="ecg-scrub-window" id="ecgScrubWindow"></div>
+  </div>
+  <div class="ecg-hint">
+    Drag the trace to pan &middot; mouse-wheel to scroll &middot; Shift + wheel to zoom &middot; click the bar to seek
   </div>
 </div>
 
@@ -388,6 +445,7 @@ async function loadReport() {
       j.episodes.length ? j.episodes.length + ' total' : '';
 
     renderEpisodes(j.episodes || [], j.summary.end_time);
+    ecgStripInit(j.summary, j.episodes || []);
   } catch (e) {
     document.getElementById('summaryRow').innerHTML =
       '<div class="stat-card" style="flex:1"><div class="label">Error</div>'
@@ -396,7 +454,394 @@ async function loadReport() {
   }
 }
 
-window.addEventListener('resize', () => { if (hrChartData) drawHrChart(); });
+window.addEventListener('resize', () => {
+  if (hrChartData) drawHrChart();
+  if (ecgState.data) ecgStripDraw();
+});
+
+// ── ECG strip ─────────────────────────────────────────────────────────────────
+const ECG_COL_BG       = '#fffaf9';
+const ECG_COL_GRID_MIN = '#fce4e4';
+const ECG_COL_GRID_MAJ = '#f09090';
+const ECG_COL_TRACE    = '#b91c1c';
+const ECG_COL_NO_DATA  = 'rgba(200,200,210,0.30)';
+const ECG_COL_EP = {
+  bigeminy: 'rgba(220,38,38,0.18)',
+  vtach:    'rgba(147,51,234,0.18)',
+  trigeminy:'rgba(217,119,6,0.18)',
+  couplet:  'rgba(234,88,12,0.18)',
+};
+const ECG_PAD_L = 8, ECG_PAD_R = 8, ECG_PAD_T = 6, ECG_PAD_B = 28;
+
+const ecgState = {
+  startMs: null,        // activity start (left bound)
+  activityEndMs: null,  // activity end (recovery boundary)
+  endMs: null,          // window end (right bound, includes recovery)
+  windowSec: 30,
+  centerMs: null,
+  episodes: [],
+  data: null,
+  fetchSeq: 0,
+  fetchTimer: null,
+  drag: null,           // { startX, startCenter }
+};
+
+function ecgIsoLocalFromMs(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate())
+       + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+function ecgIsInRanges(ms, ranges) {
+  for (const [s, e] of ranges) if (ms >= s && ms < e) return true;
+  return false;
+}
+function ecgClampCenter() {
+  const halfMs = (ecgState.windowSec * 1000) / 2;
+  const lo = ecgState.startMs + halfMs;
+  const hi = ecgState.endMs - halfMs;
+  if (lo > hi) ecgState.centerMs = (ecgState.startMs + ecgState.endMs) / 2;
+  else ecgState.centerMs = Math.max(lo, Math.min(hi, ecgState.centerMs));
+}
+
+function ecgStripInit(summary, episodes) {
+  ecgState.startMs       = new Date(summary.start_time.replace(' ', 'T')).getTime();
+  ecgState.activityEndMs = new Date(summary.end_time.replace(' ', 'T')).getTime();
+  ecgState.endMs         = new Date(summary.window_end.replace(' ', 'T')).getTime();
+  ecgState.windowSec     = parseInt(document.getElementById('ecgWindow').value, 10);
+  ecgState.centerMs      = ecgState.startMs + (ecgState.windowSec * 1000) / 2;
+  ecgState.episodes      = (episodes || []).map(e => ({
+    type:    e.episode_type,
+    startMs: new Date(e.start_time.replace(' ', 'T')).getTime(),
+    endMs:   new Date(e.end_time.replace(' ', 'T')).getTime(),
+  }));
+  ecgClampCenter();
+  ecgStripFetch();
+  ecgStripDrawScrub();
+  ecgStripBindEvents();
+}
+
+function ecgStripPan(seconds) {
+  if (!ecgState.startMs) return;
+  ecgState.centerMs += seconds * 1000;
+  ecgClampCenter();
+  ecgStripFetch();
+}
+function ecgStripZoom() {
+  if (!ecgState.startMs) return;
+  ecgState.windowSec = parseInt(document.getElementById('ecgWindow').value, 10);
+  ecgClampCenter();
+  ecgStripFetch();
+}
+function ecgStripScheduleFetch() {
+  if (ecgState.fetchTimer) clearTimeout(ecgState.fetchTimer);
+  ecgState.fetchTimer = setTimeout(ecgStripFetch, 150);
+}
+
+async function ecgStripFetch() {
+  if (ecgState.fetchTimer) { clearTimeout(ecgState.fetchTimer); ecgState.fetchTimer = null; }
+  if (!ecgState.startMs) return;
+  ecgClampCenter();
+  ecgStripDrawScrub();
+  const seq = ++ecgState.fetchSeq;
+  document.getElementById('ecgStripOverlay').classList.add('visible');
+  document.getElementById('ecgStripMsg').innerHTML =
+    '<span class="spinner"></span>Loading ECG&hellip;';
+  try {
+    const url = '/api/ecg_raw?center=' + encodeURIComponent(ecgIsoLocalFromMs(ecgState.centerMs))
+              + '&window=' + ecgState.windowSec;
+    const res = await fetch(url);
+    if (seq !== ecgState.fetchSeq) return;  // a newer request superseded this one
+    const j = await res.json();
+    if (!res.ok || j.error) throw new Error(j.error || ('HTTP ' + res.status));
+    ecgState.data = j;
+    if (!j.data_ranges || j.data_ranges.length === 0) {
+      document.getElementById('ecgStripMsg').textContent = 'No recorded ECG in this window.';
+    } else {
+      document.getElementById('ecgStripOverlay').classList.remove('visible');
+    }
+    ecgStripDraw();
+  } catch (e) {
+    if (seq !== ecgState.fetchSeq) return;
+    document.getElementById('ecgStripMsg').innerHTML =
+      '<span style="color:var(--danger)">Error: ' + escapeHtml(e.message) + '</span>';
+  }
+}
+
+function ecgStripDraw() {
+  const data = ecgState.data;
+  if (!data) return;
+  const canvas = document.getElementById('ecgStripCanvas');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth;
+  const H = 240;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width  = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const cW = W - ECG_PAD_L - ECG_PAD_R;
+  const cH = H - ECG_PAD_T - ECG_PAD_B;
+
+  // Background
+  ctx.fillStyle = ECG_COL_BG;
+  ctx.fillRect(0, 0, W, H);
+
+  const samples = data.samples;
+  const startMs = data.start_ms;
+  const sr      = data.sample_rate;
+  const ranges  = data.data_ranges || [];
+  const nSamples = samples.length;
+  const intervalMs = 1000 / sr;
+  const totalMs = nSamples * intervalMs;
+
+  // Y autoscale within recorded regions only
+  let yMin = Infinity, yMax = -Infinity;
+  for (let i = 0; i < nSamples; i++) {
+    const ms = startMs + i * intervalMs;
+    if (!ecgIsInRanges(ms, ranges)) continue;
+    if (samples[i] < yMin) yMin = samples[i];
+    if (samples[i] > yMax) yMax = samples[i];
+  }
+  if (!isFinite(yMin)) { yMin = -512; yMax = 512; }
+  const pad = Math.max((yMax - yMin) * 0.12, 50);
+  yMin -= pad; yMax += pad;
+  const yRange = yMax - yMin;
+
+  const xOf = ms => ECG_PAD_L + (ms - startMs) / totalMs * cW;
+  const yOf = v  => ECG_PAD_T + cH - (v - yMin) / yRange * cH;
+
+  // No-data shading
+  ctx.fillStyle = ECG_COL_NO_DATA;
+  let prev = startMs;
+  for (const [rs, re] of ranges) {
+    if (rs > prev) ctx.fillRect(xOf(prev), ECG_PAD_T, xOf(rs) - xOf(prev), cH);
+    prev = re;
+  }
+  if (prev < startMs + totalMs) {
+    ctx.fillRect(xOf(prev), ECG_PAD_T, xOf(startMs + totalMs) - xOf(prev), cH);
+  }
+
+  // Activity-end / recovery shading
+  if (ecgState.activityEndMs > startMs && ecgState.activityEndMs < startMs + totalMs) {
+    ctx.fillStyle = 'rgba(76,110,245,0.05)';
+    ctx.fillRect(xOf(ecgState.activityEndMs), ECG_PAD_T,
+                 xOf(startMs + totalMs) - xOf(ecgState.activityEndMs), cH);
+    ctx.strokeStyle = 'rgba(76,110,245,0.6)';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(xOf(ecgState.activityEndMs), ECG_PAD_T);
+    ctx.lineTo(xOf(ecgState.activityEndMs), ECG_PAD_T + cH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Episode bands
+  for (const ep of ecgState.episodes) {
+    if (ep.endMs < startMs || ep.startMs > startMs + totalMs) continue;
+    const x1 = Math.max(ECG_PAD_L, xOf(ep.startMs));
+    const x2 = Math.min(ECG_PAD_L + cW, xOf(ep.endMs));
+    if (x2 > x1) {
+      ctx.fillStyle = ECG_COL_EP[ep.type] || 'rgba(100,100,200,0.15)';
+      ctx.fillRect(x1, ECG_PAD_T, x2 - x1, cH);
+      ctx.fillStyle = (ECG_COL_EP[ep.type] || 'rgba(100,100,200,0.9)').replace('0.18', '0.9');
+      ctx.font = '9px system-ui';
+      ctx.fillText(ep.type, x1 + 3, ECG_PAD_T + 11);
+    }
+  }
+
+  // Minor grid (1 s)
+  ctx.strokeStyle = ECG_COL_GRID_MIN;
+  ctx.lineWidth = 0.5;
+  const firstMin = Math.ceil(startMs / 1000) * 1000;
+  ctx.beginPath();
+  for (let t = firstMin; t < startMs + totalMs; t += 1000) {
+    const x = xOf(t);
+    ctx.moveTo(x, ECG_PAD_T);
+    ctx.lineTo(x, ECG_PAD_T + cH);
+  }
+  ctx.stroke();
+
+  // Major grid (5 s) + axis labels
+  ctx.strokeStyle = ECG_COL_GRID_MAJ;
+  ctx.lineWidth = 0.8;
+  const firstMaj = Math.ceil(startMs / 5000) * 5000;
+  ctx.beginPath();
+  for (let t = firstMaj; t <= startMs + totalMs; t += 5000) {
+    const x = xOf(t);
+    ctx.moveTo(x, ECG_PAD_T);
+    ctx.lineTo(x, ECG_PAD_T + cH);
+  }
+  ctx.stroke();
+
+  // X-axis label strip
+  ctx.fillStyle = ECG_COL_BG;
+  ctx.fillRect(ECG_PAD_L, ECG_PAD_T + cH, cW, ECG_PAD_B);
+  ctx.fillStyle = '#555';
+  ctx.font = '11px "Segoe UI", system-ui';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  // Choose label step to avoid crowding (aim for ~80 px between labels)
+  const pxPerSec = cW / (totalMs / 1000);
+  const stepSec = pxPerSec >= 16 ? 5
+                 : pxPerSec >= 8 ? 10
+                 : pxPerSec >= 4 ? 30
+                 : 60;
+  const stepMs = stepSec * 1000;
+  const firstLabel = Math.ceil(startMs / stepMs) * stepMs;
+  for (let t = firstLabel; t <= startMs + totalMs; t += stepMs) {
+    const x = xOf(t);
+    if (x < ECG_PAD_L + 24 || x > ECG_PAD_L + cW - 24) continue;
+    const d = new Date(t);
+    ctx.fillText(pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()),
+                 x, ECG_PAD_T + cH + 6);
+  }
+
+  // ECG trace (min/max per pixel column)
+  ctx.strokeStyle = ECG_COL_TRACE;
+  ctx.lineWidth = 1.2;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  let penDown = false;
+  for (let px = 0; px < cW; px++) {
+    const sLo = Math.max(0, Math.floor(px       * nSamples / cW));
+    const sHi = Math.min(nSamples, Math.ceil((px + 1) * nSamples / cW));
+    if (sLo >= sHi) { penDown = false; continue; }
+    const midMs = startMs + ((sLo + sHi) / 2) * intervalMs;
+    if (!ecgIsInRanges(midMs, ranges)) { penDown = false; continue; }
+    let lo = Infinity, hi = -Infinity;
+    for (let s = sLo; s < sHi; s++) {
+      if (samples[s] < lo) lo = samples[s];
+      if (samples[s] > hi) hi = samples[s];
+    }
+    const x = ECG_PAD_L + px + 0.5;
+    const yLo = yOf(lo), yHi = yOf(hi);
+    const yMid = (yLo + yHi) / 2;
+    if (!penDown) { ctx.moveTo(x, yMid); penDown = true; }
+    else {
+      ctx.lineTo(x, yMid);
+      if (yLo !== yHi) {
+        ctx.lineTo(x, yLo);
+        ctx.lineTo(x, yHi);
+        ctx.lineTo(x, yMid);
+      }
+    }
+  }
+  ctx.stroke();
+
+  // Border
+  ctx.strokeStyle = 'rgba(0,0,0,0.10)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(ECG_PAD_L, ECG_PAD_T, cW, cH);
+
+  // Position label
+  const cd = new Date(ecgState.centerMs);
+  document.getElementById('ecgStripLabel').textContent =
+    pad2(cd.getHours()) + ':' + pad2(cd.getMinutes()) + ':' + pad2(cd.getSeconds())
+    + '  ·  ±' + (ecgState.windowSec / 2) + ' s';
+}
+
+function ecgStripDrawScrub() {
+  if (!ecgState.startMs) return;
+  const total = ecgState.endMs - ecgState.startMs;
+  if (total <= 0) return;
+  const winFrac   = (ecgState.windowSec * 1000) / total;
+  const startFrac = ((ecgState.centerMs - (ecgState.windowSec * 1000) / 2) - ecgState.startMs) / total;
+  const win = document.getElementById('ecgScrubWindow');
+  win.style.left  = (Math.max(0, Math.min(1, startFrac)) * 100) + '%';
+  win.style.width = (Math.max(0.005, Math.min(1, winFrac)) * 100) + '%';
+
+  // Recovery region shading
+  const rec = document.getElementById('ecgScrubRecovery');
+  if (ecgState.activityEndMs < ecgState.endMs) {
+    const rFrac = (ecgState.activityEndMs - ecgState.startMs) / total;
+    rec.style.left  = (rFrac * 100) + '%';
+    rec.style.right = '0';
+    rec.style.display = '';
+  } else {
+    rec.style.display = 'none';
+  }
+
+  // Episode marks
+  const marks = document.getElementById('ecgScrubMarks');
+  marks.innerHTML = '';
+  for (const ep of ecgState.episodes) {
+    const f = (ep.startMs - ecgState.startMs) / total;
+    if (f < 0 || f > 1) continue;
+    const m = document.createElement('div');
+    m.className = 'ecg-scrub-mark';
+    m.style.left = (f * 100) + '%';
+    marks.appendChild(m);
+  }
+}
+
+function ecgStripBindEvents() {
+  const canvas = document.getElementById('ecgStripCanvas');
+  const scrub  = document.getElementById('ecgScrub');
+  if (canvas._ecgBound) return;
+  canvas._ecgBound = true;
+
+  // Drag-to-pan: translate canvas live, refetch on release
+  canvas.addEventListener('mousedown', e => {
+    if (!ecgState.data) return;
+    ecgState.drag = { startX: e.clientX, startCenter: ecgState.centerMs, dx: 0 };
+    canvas.classList.add('dragging');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!ecgState.drag) return;
+    const dx = e.clientX - ecgState.drag.startX;
+    ecgState.drag.dx = dx;
+    canvas.style.transform = 'translateX(' + dx + 'px)';
+    const cW = canvas.clientWidth - ECG_PAD_L - ECG_PAD_R;
+    const msPerPx = (ecgState.windowSec * 1000) / cW;
+    ecgState.centerMs = ecgState.drag.startCenter - dx * msPerPx;
+    ecgClampCenter();
+    ecgStripDrawScrub();
+  });
+  window.addEventListener('mouseup', () => {
+    if (!ecgState.drag) return;
+    const dx = ecgState.drag.dx;
+    ecgState.drag = null;
+    canvas.style.transform = '';
+    canvas.classList.remove('dragging');
+    if (Math.abs(dx) >= 1) ecgStripFetch();
+  });
+
+  // Mouse-wheel: pan; shift-wheel: zoom
+  canvas.addEventListener('wheel', e => {
+    if (!ecgState.startMs) return;
+    e.preventDefault();
+    if (e.shiftKey) {
+      const opts = [10, 30, 60, 120];
+      let i = opts.indexOf(ecgState.windowSec);
+      if (i < 0) i = 1;
+      i = Math.max(0, Math.min(opts.length - 1, i + (e.deltaY > 0 ? 1 : -1)));
+      ecgState.windowSec = opts[i];
+      document.getElementById('ecgWindow').value = String(opts[i]);
+    } else {
+      const cW = canvas.clientWidth - ECG_PAD_L - ECG_PAD_R;
+      const msPerPx = (ecgState.windowSec * 1000) / cW;
+      const dx = (e.deltaX || 0) + (e.deltaY || 0);
+      ecgState.centerMs += dx * msPerPx;
+    }
+    ecgClampCenter();
+    ecgStripDrawScrub();
+    ecgStripScheduleFetch();
+  }, { passive: false });
+
+  // Click scrubber to seek
+  scrub.addEventListener('click', e => {
+    if (!ecgState.startMs) return;
+    const rect = scrub.getBoundingClientRect();
+    const frac = (e.clientX - rect.left) / rect.width;
+    const total = ecgState.endMs - ecgState.startMs;
+    ecgState.centerMs = ecgState.startMs + frac * total;
+    ecgClampCenter();
+    ecgStripFetch();
+  });
+}
 
 initControls();
 loadReport();
