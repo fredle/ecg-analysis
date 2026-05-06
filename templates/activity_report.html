@@ -55,8 +55,8 @@
 <a href="/activities" class="back-link">&larr; All activities</a>
 <h1 style="margin-top:6px">{{ activity.title }}</h1>
 <div class="subtitle">
-  {{ activity.activity_type }} &middot; {{ activity.date }} &middot;
-  {{ activity.distance }} &middot; {{ activity.elevation }} elev
+  {{ activity.activity_type }} &middot; {{ display_when }} &middot;
+  {{ activity.distance }} &middot; {{ activity.elevation }} elev{% if activity.pace %} &middot; {{ activity.pace }}{% endif %}
 </div>
 
 <div class="controls">
@@ -97,7 +97,7 @@
 
 <script>
 const ACTIVITY = {{ activity_json|safe }};
-const DEFAULT_START_HOUR = {{ default_start_hour }};
+const DEFAULT_START_ISO = '{{ default_start_iso }}';
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 function escapeHtml(s) {
@@ -116,15 +116,9 @@ function isoLocal(d) {
        + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
 }
 
-function defaultStartIso() {
-  const d = new Date(ACTIVITY.date + 'T00:00:00');
-  d.setHours(DEFAULT_START_HOUR, 0, 0, 0);
-  return isoLocal(d);
-}
-
 function initControls() {
   const params = new URLSearchParams(window.location.search);
-  document.getElementById('startTime').value = params.get('start') || defaultStartIso();
+  document.getElementById('startTime').value = params.get('start') || DEFAULT_START_ISO;
   const rec = params.get('recovery');
   if (rec && Number(rec) > 0) {
     document.getElementById('recoveryToggle').checked = true;

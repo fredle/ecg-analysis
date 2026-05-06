@@ -96,6 +96,8 @@
 <script>
 var granularity = 'day';
 var chartData = [];
+var eventsList = [];
+var eventRects = [];
 
 (function() {
   var today = new Date();
@@ -103,8 +105,14 @@ var chartData = [];
   document.getElementById('endDate').value = fmtISO(today);
   document.getElementById('startDate').value = fmtISO(startD);
   updateHint();
-  loadData();
+  loadEvents().then(loadData);
 })();
+
+function loadEvents() {
+  return fetch('/api/events').then(function(r){return r.json();}).then(function(j){
+    eventsList = (j && j.events) || [];
+  }).catch(function(){ eventsList = []; });
+}
 
 function fmtISO(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
 function pad(n) { return String(n).padStart(2,'0'); }
@@ -236,6 +244,46 @@ function drawChart() {
     barRects.push({x:bX,y:bY,w:barW,h:bH,d:d});
   });
 
+  // Event markers: vertical line + flag at top of plot for matching dates
+  eventRects=[];
+  if (eventsList.length>0) {
+    // Group events by date and pair with the first matching bucket index
+    var eventsByDate={};
+    eventsList.forEach(function(ev){
+      if(!eventsByDate[ev.date]) eventsByDate[ev.date]=[];
+      eventsByDate[ev.date].push(ev);
+    });
+    var seenDates={};
+    for (var ei=0; ei<n; ei++) {
+      var bucketDate=chartData[ei].bucket.substring(0,10);
+      if (!eventsByDate[bucketDate] || seenDates[bucketDate]) continue;
+      seenDates[bucketDate]=true;
+      var evs=eventsByDate[bucketDate];
+      var ex=PAD_L+ei*slotW+slotW/2;
+      // Vertical dashed line
+      ctx.strokeStyle='#4c6ef5'; ctx.lineWidth=1.2; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(ex,PAD_T); ctx.lineTo(ex,PAD_T+cH); ctx.stroke();
+      ctx.setLineDash([]);
+      // Flag triangle pointing down + small badge
+      var flagW=evs.length>1?22:14, flagH=14, flagX=ex-flagW/2, flagY=PAD_T;
+      ctx.fillStyle='#4c6ef5';
+      ctx.beginPath();
+      ctx.moveTo(flagX,flagY);
+      ctx.lineTo(flagX+flagW,flagY);
+      ctx.lineTo(flagX+flagW,flagY+flagH-4);
+      ctx.lineTo(ex,flagY+flagH);
+      ctx.lineTo(flagX,flagY+flagH-4);
+      ctx.closePath();
+      ctx.fill();
+      // Count text if multiple
+      if (evs.length>1) {
+        ctx.fillStyle='#fff'; ctx.font='bold 10px sans-serif'; ctx.textAlign='center';
+        ctx.fillText(evs.length, ex, flagY+10);
+      }
+      eventRects.push({x:flagX-2, y:flagY, w:flagW+4, h:flagH+2, date:bucketDate, events:evs});
+    }
+  }
+
   var maxLabels=Math.floor(cW/72), step=Math.max(1,Math.ceil(n/maxLabels));
   ctx.fillStyle='#6b7280'; ctx.font='10px sans-serif'; ctx.textAlign='center';
   for (var i=0;i<n;i+=step) {
@@ -245,7 +293,20 @@ function drawChart() {
     } else { ctx.fillText(label,lx,PAD_T+cH+18); }
   }
   canvas.onmousemove=function(evt) {
-    var rect=canvas.getBoundingClientRect(), mx=evt.clientX-rect.left;
+    var rect=canvas.getBoundingClientRect(), mx=evt.clientX-rect.left, my=evt.clientY-rect.top;
+    // Event marker hit-test first (drawn on top)
+    for (var ei=0;ei<eventRects.length;ei++) {
+      var er=eventRects[ei];
+      if (mx>=er.x && mx<=er.x+er.w && my>=er.y && my<=er.y+er.h) {
+        var html='<strong style="color:#4c6ef5">'+er.date+'</strong>';
+        for (var k=0;k<er.events.length;k++) {
+          var txt=er.events[k].event;
+          html+='<br>&bull; '+txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        showTip(evt, html);
+        return;
+      }
+    }
     var hit=null;
     for (var i=0;i<barRects.length;i++){var b=barRects[i];if(mx>=b.x&&mx<=b.x+b.w){hit=b.d;break;}}
     if (!hit){var idx=Math.floor((mx-PAD_L)/slotW);if(idx>=0&&idx<chartData.length)hit=chartData[idx];}

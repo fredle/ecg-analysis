@@ -41,6 +41,7 @@ MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "beat-3-eff-sm")
 MODEL_PATH = os.path.join(MODEL_DIR, "model.keras")
 UPLOAD_REGISTRY_PATH = os.path.join(DATA_DIR, "upload_registry.json")
 ACTIVITIES_PARQUET_PATH = os.path.join(DATA_DIR, "activities.parquet")
+EVENTS_PARQUET_PATH = os.path.join(DATA_DIR, "events.parquet")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
@@ -1539,8 +1540,8 @@ def api_pvc_burden():
 # Strava activities
 # ---------------------------------------------------------------------------
 ACTIVITY_COLUMNS = [
-    "activity_id", "activity_type", "date", "title",
-    "duration_seconds", "distance", "elevation", "url",
+    "activity_id", "activity_type", "date", "start_time", "title",
+    "duration_seconds", "distance", "elevation", "pace", "url",
 ]
 
 
@@ -1561,11 +1562,31 @@ def _extract_strava_id(url: str) -> str:
     return m.group(1)
 
 
+def _build_start_dt(date_str: str, time_str) -> str | None:
+    """Combine 'YYYY-MM-DD' + 'HH:MM' or 'HH:MM:SS' into 'YYYY-MM-DD HH:MM:SS'."""
+    if time_str is None:
+        return None
+    t = str(time_str).strip()
+    if not t or t.lower() in ("nan", "none"):
+        return None
+    parts = t.split(":")
+    if len(parts) == 2:
+        return f"{date_str} {t}:00"
+    if len(parts) == 3:
+        return f"{date_str} {t}"
+    return None
+
+
 def _load_activities() -> pd.DataFrame:
     if not os.path.isfile(ACTIVITIES_PARQUET_PATH):
         return pd.DataFrame(columns=ACTIVITY_COLUMNS)
     df = pd.read_parquet(ACTIVITIES_PARQUET_PATH)
     df["activity_id"] = df["activity_id"].astype(str)
+    # Migrate older parquets that lack start_time / pace columns
+    if "start_time" not in df.columns:
+        df["start_time"] = None
+    if "pace" not in df.columns:
+        df["pace"] = ""
     return df
 
 
@@ -1580,17 +1601,53 @@ def _parse_strava_csv(text: str) -> pd.DataFrame:
     missing = expected - set(df.columns)
     if missing:
         raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
+
+    has_time = "Time" in df.columns
+    has_pace = "Pace" in df.columns
+
+    if has_time:
+        start_time_col = [_build_start_dt(d, t)
+                          for d, t in zip(df["Date"].astype(str), df["Time"])]
+    else:
+        start_time_col = [None] * len(df)
+
     out = pd.DataFrame({
         "activity_id":      df["URL"].map(_extract_strava_id).astype(str),
         "activity_type":    df["Activity Type"].astype(str),
         "date":             df["Date"].astype(str),
+        "start_time":       start_time_col,
         "title":            df["Title"].astype(str),
         "duration_seconds": df["Duration"].map(_parse_strava_duration).astype(int),
         "distance":         df["Distance"].astype(str),
         "elevation":        df["Elevation"].astype(str),
+        "pace":             df["Pace"].fillna("").astype(str) if has_pace else "",
         "url":              df["URL"].astype(str),
     })
     return out.drop_duplicates(subset=["activity_id"], keep="first")
+
+
+def _activity_to_dict(row) -> dict:
+    """Coerce a parquet row to a JSON-friendly dict."""
+    st = row.get("start_time") if hasattr(row, "get") else row["start_time"]
+    if pd.isna(st) or not str(st).strip() or str(st) in ("None", "nan", "NaT"):
+        st_clean = None
+    else:
+        st_clean = str(st)
+    pace = row.get("pace") if hasattr(row, "get") else row["pace"]
+    if pd.isna(pace):
+        pace = ""
+    return {
+        "activity_id":      str(row["activity_id"]),
+        "activity_type":    str(row["activity_type"]),
+        "date":             str(row["date"]),
+        "start_time":       st_clean,
+        "title":            str(row["title"]),
+        "duration_seconds": int(row["duration_seconds"]),
+        "distance":         str(row["distance"]),
+        "elevation":        str(row["elevation"]),
+        "pace":             str(pace),
+        "url":              str(row["url"]),
+    }
 
 
 def _guess_start_hour(title: str) -> int:
@@ -1613,8 +1670,8 @@ def api_activities_list():
     df = _load_activities()
     if df.empty:
         return jsonify({"activities": []})
-    df = df.sort_values("date", ascending=False)
-    return jsonify({"activities": df.to_dict(orient="records")})
+    df = df.sort_values(["date", "start_time"], ascending=[False, False], na_position="last")
+    return jsonify({"activities": [_activity_to_dict(r) for _, r in df.iterrows()]})
 
 
 @app.route("/api/activities/upload", methods=["POST"])
@@ -1631,22 +1688,25 @@ def api_activities_upload():
         return jsonify({"error": f"Could not parse CSV: {exc}"}), 400
 
     existing = _load_activities()
-    existing_ids = set(existing["activity_id"]) if not existing.empty else set()
-    new_df = parsed[~parsed["activity_id"].isin(existing_ids)]
     n_total = len(parsed)
-    n_new = len(new_df)
+    parsed_ids = set(parsed["activity_id"])
+    existing_ids = set(existing["activity_id"]) if not existing.empty else set()
+    n_new = len(parsed_ids - existing_ids)
     n_dup = n_total - n_new
 
-    if n_new > 0:
-        combined = pd.concat([existing, new_df], ignore_index=True)
-        combined = combined.drop_duplicates(subset=["activity_id"], keep="first")
-        _save_activities(combined)
-        log.info("Activities CSV: added %d, skipped %d duplicates", n_new, n_dup)
+    # Replace existing rows whose IDs appear in the new CSV so re-uploading a
+    # CSV that adds new fields (e.g. Time, Pace) refreshes those values.
+    if not existing.empty:
+        existing = existing[~existing["activity_id"].isin(parsed_ids)]
+    combined = pd.concat([existing, parsed], ignore_index=True) if not existing.empty else parsed
+    combined = combined.drop_duplicates(subset=["activity_id"], keep="last")
+    _save_activities(combined)
+    log.info("Activities CSV: added %d, refreshed %d duplicates", n_new, n_dup)
 
     return jsonify({
         "added": n_new,
         "skipped": n_dup,
-        "total": int(len(_load_activities())),
+        "total": int(len(combined)),
     })
 
 
@@ -1656,13 +1716,22 @@ def activity_detail_page(activity_id):
     if df.empty or activity_id not in set(df["activity_id"]):
         flash("Activity not found.", "error")
         return redirect(url_for("activities_page"))
-    activity = df[df["activity_id"] == activity_id].iloc[0].to_dict()
-    activity["activity_id"] = str(activity["activity_id"])
-    activity["duration_seconds"] = int(activity["duration_seconds"])
+    activity = _activity_to_dict(df[df["activity_id"] == activity_id].iloc[0])
+
+    if activity["start_time"]:
+        default_start_iso = activity["start_time"].replace(" ", "T")
+        display_when = activity["start_time"][:16]
+    else:
+        d = datetime.fromisoformat(activity["date"]).replace(
+            hour=_guess_start_hour(activity["title"]))
+        default_start_iso = d.strftime("%Y-%m-%dT%H:%M:%S")
+        display_when = activity["date"]
+
     return render_template("activity_report.html",
                            activity=activity,
                            activity_json=json.dumps(activity),
-                           default_start_hour=_guess_start_hour(activity["title"]))
+                           default_start_iso=default_start_iso,
+                           display_when=display_when)
 
 
 @app.route("/api/activities/<activity_id>/report")
@@ -1671,7 +1740,7 @@ def api_activity_report(activity_id):
     df = _load_activities()
     if df.empty or activity_id not in set(df["activity_id"]):
         return jsonify({"error": "Activity not found"}), 404
-    activity = df[df["activity_id"] == activity_id].iloc[0].to_dict()
+    activity = _activity_to_dict(df[df["activity_id"] == activity_id].iloc[0])
 
     start_param = (request.args.get("start") or "").strip()
     if start_param:
@@ -1679,8 +1748,10 @@ def api_activity_report(activity_id):
             start_dt = datetime.fromisoformat(start_param)
         except ValueError:
             return jsonify({"error": f"Invalid start: {start_param!r}"}), 400
+    elif activity["start_time"]:
+        start_dt = datetime.fromisoformat(activity["start_time"].replace(" ", "T"))
     else:
-        start_dt = datetime.fromisoformat(str(activity["date"])).replace(
+        start_dt = datetime.fromisoformat(activity["date"]).replace(
             hour=_guess_start_hour(activity["title"]))
 
     duration_sec = int(activity["duration_seconds"])
@@ -1761,6 +1832,115 @@ def api_activity_report(activity_id):
         "hourly":   hourly,
         "episodes": episodes,
     })
+
+
+# ---------------------------------------------------------------------------
+# Events (annotations shown on analytics chart)
+# ---------------------------------------------------------------------------
+EVENT_COLUMNS = ["event_id", "date", "event", "created_at"]
+
+
+def _load_events() -> pd.DataFrame:
+    if not os.path.isfile(EVENTS_PARQUET_PATH):
+        return pd.DataFrame(columns=EVENT_COLUMNS)
+    df = pd.read_parquet(EVENTS_PARQUET_PATH)
+    df["event_id"] = df["event_id"].astype(str)
+    df["date"] = df["date"].astype(str)
+    df["event"] = df["event"].astype(str)
+    return df
+
+
+def _save_events(df: pd.DataFrame) -> None:
+    df.to_parquet(EVENTS_PARQUET_PATH, index=False)
+
+
+def _validate_event_payload(data: dict) -> tuple[str, str] | None:
+    date = (data.get("date") or "").strip()
+    text = (data.get("event") or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return None
+    try:
+        datetime.fromisoformat(date)
+    except ValueError:
+        return None
+    if not text or len(text) > 500:
+        return None
+    return date, text
+
+
+@app.route("/events")
+def events_page():
+    return render_template("events.html")
+
+
+@app.route("/api/events", methods=["GET"])
+def api_events_list():
+    df = _load_events()
+    if df.empty:
+        return jsonify({"events": []})
+    df = df.sort_values("date", ascending=False)
+    out = []
+    for _, r in df.iterrows():
+        out.append({
+            "event_id":   str(r["event_id"]),
+            "date":       str(r["date"]),
+            "event":      str(r["event"]),
+            "created_at": (pd.Timestamp(r["created_at"]).strftime("%Y-%m-%d %H:%M:%S")
+                           if pd.notna(r["created_at"]) else None),
+        })
+    return jsonify({"events": out})
+
+
+@app.route("/api/events", methods=["POST"])
+def api_events_create():
+    data = request.get_json(silent=True) or {}
+    parsed = _validate_event_payload(data)
+    if parsed is None:
+        return jsonify({"error": "date (YYYY-MM-DD) and non-empty event text required"}), 400
+    date, text = parsed
+    df = _load_events()
+    new_row = pd.DataFrame([{
+        "event_id":   uuid.uuid4().hex,
+        "date":       date,
+        "event":      text,
+        "created_at": pd.Timestamp.now(),
+    }])
+    combined = pd.concat([df, new_row], ignore_index=True) if not df.empty else new_row
+    _save_events(combined)
+    return jsonify({
+        "event_id":   new_row.iloc[0]["event_id"],
+        "date":       date,
+        "event":      text,
+        "created_at": new_row.iloc[0]["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }), 201
+
+
+@app.route("/api/events/<event_id>", methods=["PUT"])
+def api_events_update(event_id):
+    data = request.get_json(silent=True) or {}
+    parsed = _validate_event_payload(data)
+    if parsed is None:
+        return jsonify({"error": "date (YYYY-MM-DD) and non-empty event text required"}), 400
+    date, text = parsed
+    df = _load_events()
+    mask = df["event_id"] == event_id
+    if not mask.any():
+        return jsonify({"error": "Event not found"}), 404
+    df.loc[mask, "date"] = date
+    df.loc[mask, "event"] = text
+    _save_events(df)
+    return jsonify({"event_id": event_id, "date": date, "event": text})
+
+
+@app.route("/api/events/<event_id>", methods=["DELETE"])
+def api_events_delete(event_id):
+    df = _load_events()
+    mask = df["event_id"] == event_id
+    if not mask.any():
+        return jsonify({"error": "Event not found"}), 404
+    df = df[~mask].reset_index(drop=True)
+    _save_events(df)
+    return jsonify({"deleted": event_id})
 
 
 # ---------------------------------------------------------------------------

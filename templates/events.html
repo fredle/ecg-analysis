@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Events — ECG Analyser{% endblock %}
+
+{% block extra_styles %}
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+
+  .add-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+  .add-card label { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 4px; }
+  .add-card input[type="date"], .add-card input[type="text"] { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; }
+  .add-card input[type="date"] { min-width: 150px; }
+  .add-card input[type="text"] { min-width: 280px; flex: 1; }
+  .btn { border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s, background 0.15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: 0.85; }
+  .btn-primary:disabled { opacity: 0.45; cursor: default; }
+  .btn-ghost { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--border); }
+  .btn-danger { background: rgba(220,38,38,0.1); color: var(--danger); }
+  .btn-danger:hover { background: var(--danger); color: #fff; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .msg { font-size: 13px; color: var(--text-dim); }
+  .msg.ok { color: var(--ok); }
+  .msg.err { color: var(--danger); }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0; }
+  table.events { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.events th, table.events td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  table.events th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); font-weight: 600; background: var(--bg); }
+  table.events tbody tr:last-child td { border-bottom: none; }
+  table.events tbody tr:hover { background: rgba(108,140,255,0.05); }
+  .col-date { width: 130px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .col-actions { width: 160px; white-space: nowrap; text-align: right; }
+  .row-actions { display: inline-flex; gap: 6px; }
+  .edit-input { width: 100%; background: var(--bg); border: 1px solid var(--accent); border-radius: 5px; padding: 5px 8px; font-size: 13px; font-family: inherit; }
+  .edit-input[type="date"] { width: 130px; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--text-dim); font-size: 14px; }
+{% endblock %}
+
+{% block content %}
+<h1>Events</h1>
+<div class="subtitle">Annotate dates with notes that appear as markers on the analytics chart.</div>
+
+<div class="add-card">
+  <label>Date
+    <input type="date" id="newDate">
+  </label>
+  <label>Event
+    <input type="text" id="newEvent" maxlength="500" placeholder="e.g. Started new medication">
+  </label>
+  <button class="btn btn-primary" onclick="createEvent()">Add event</button>
+  <span class="msg" id="msg"></span>
+</div>
+
+<div class="panel">
+  <table class="events">
+    <thead>
+      <tr>
+        <th class="col-date">Date</th>
+        <th>Event</th>
+        <th class="col-actions"></th>
+      </tr>
+    </thead>
+    <tbody id="evTbody">
+      <tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+function setMsg(text, cls) {
+  const m = document.getElementById('msg');
+  m.className = 'msg' + (cls ? ' ' + cls : '');
+  m.textContent = text;
+}
+
+(function initDateDefault() {
+  const d = new Date();
+  const iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  document.getElementById('newDate').value = iso;
+})();
+
+async function loadEvents() {
+  const tbody = document.getElementById('evTbody');
+  try {
+    const res = await fetch('/api/events');
+    const j = await res.json();
+    const events = j.events || [];
+    if (events.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" class="empty">No events yet &mdash; add one above to mark a date on the analytics chart.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    for (const e of events) {
+      const tr = document.createElement('tr');
+      tr.dataset.id = e.event_id;
+      tr.innerHTML =
+        '<td class="col-date view-date">' + escapeHtml(e.date) + '</td>' +
+        '<td class="view-text">' + escapeHtml(e.event) + '</td>' +
+        '<td class="col-actions">' +
+          '<span class="row-actions">' +
+            '<button class="btn btn-ghost btn-sm" onclick="startEdit(this)">Edit</button>' +
+            '<button class="btn btn-danger btn-sm" onclick="deleteEvent(this, \'' + e.event_id + '\')">Delete</button>' +
+          '</span>' +
+        '</td>';
+      tbody.appendChild(tr);
+    }
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty" style="color:var(--danger)">Failed to load: ' + escapeHtml(err.message) + '</td></tr>';
+  }
+}
+
+async function createEvent() {
+  const date = document.getElementById('newDate').value;
+  const text = document.getElementById('newEvent').value.trim();
+  if (!date || !text) { setMsg('Both date and event text are required.', 'err'); return; }
+  setMsg('Saving…');
+  try {
+    const res = await fetch('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, event: text }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+    document.getElementById('newEvent').value = '';
+    setMsg('Event added.', 'ok');
+    loadEvents();
+  } catch (err) {
+    setMsg('Error: ' + err.message, 'err');
+  }
+}
+
+function startEdit(btn) {
+  const tr = btn.closest('tr');
+  const date = tr.querySelector('.view-date').textContent.trim();
+  const text = tr.querySelector('.view-text').textContent.trim();
+  tr.querySelector('.view-date').innerHTML =
+    '<input type="date" class="edit-input" value="' + escapeHtml(date) + '">';
+  tr.querySelector('.view-text').innerHTML =
+    '<input type="text" class="edit-input edit-text" maxlength="500" value="' + escapeHtml(text) + '">';
+  tr.querySelector('.row-actions').innerHTML =
+    '<button class="btn btn-primary btn-sm" onclick="saveEdit(this)">Save</button>' +
+    '<button class="btn btn-ghost btn-sm" onclick="loadEvents()">Cancel</button>';
+  tr.querySelector('.edit-text').focus();
+}
+
+async function saveEdit(btn) {
+  const tr = btn.closest('tr');
+  const id = tr.dataset.id;
+  const date = tr.querySelector('input[type="date"]').value;
+  const text = tr.querySelector('input[type="text"]').value.trim();
+  if (!date || !text) { setMsg('Both date and event text are required.', 'err'); return; }
+  setMsg('Saving…');
+  try {
+    const res = await fetch('/api/events/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, event: text }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+    setMsg('Event updated.', 'ok');
+    loadEvents();
+  } catch (err) {
+    setMsg('Error: ' + err.message, 'err');
+  }
+}
+
+async function deleteEvent(btn, id) {
+  if (!confirm('Delete this event?')) return;
+  try {
+    const res = await fetch('/api/events/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || ('HTTP ' + res.status));
+    }
+    setMsg('Event deleted.', 'ok');
+    loadEvents();
+  } catch (err) {
+    setMsg('Error: ' + err.message, 'err');
+  }
+}
+
+document.getElementById('newEvent').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); createEvent(); }
+});
+
+loadEvents();
+</script>
+{% endblock %}

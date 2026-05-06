@@ -150,6 +150,9 @@
   <a href="/activities" class="nav-item {% if request.endpoint in ['activities_page', 'activity_detail_page'] %}active{% endif %}">
     <span class="nav-icon">&#x1F3C3;</span> Activities
   </a>
+  <a href="/events" class="nav-item {% if request.endpoint == 'events_page' %}active{% endif %}">
+    <span class="nav-icon">&#x1F4CC;</span> Events
+  </a>
   <a href="/ble" class="nav-item {% if request.endpoint == 'ble_monitor' %}active{% endif %}">
     <span class="nav-icon">&#x1F4F6;</span> Live Monitor
   </a>

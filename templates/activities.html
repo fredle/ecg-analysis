@@ -51,12 +51,13 @@
   <table class="act">
     <thead>
       <tr>
-        <th>Date</th>
+        <th>Start</th>
         <th>Type</th>
         <th>Title</th>
         <th>Duration</th>
         <th>Distance</th>
         <th>Elevation</th>
+        <th>Pace</th>
         <th></th>
       </tr>
     </thead>
@@ -89,7 +90,7 @@ async function loadActivities() {
     const j = await res.json();
     const acts = j.activities || [];
     if (acts.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">No activities yet &mdash; upload a Strava CSV above to get started.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No activities yet &mdash; upload a Strava CSV above to get started.</td></tr>';
       document.getElementById('summaryLine').textContent = '';
       return;
     }
@@ -97,19 +98,21 @@ async function loadActivities() {
     for (const a of acts) {
       const tr = document.createElement('tr');
       const cls = typePillClass(a.activity_type);
+      const when = a.start_time ? a.start_time.substring(0, 16) : a.date;
       tr.innerHTML =
-        '<td>' + escapeHtml(a.date) + '</td>' +
+        '<td>' + escapeHtml(when) + '</td>' +
         '<td><span class="pill ' + cls + '">' + escapeHtml(a.activity_type) + '</span></td>' +
         '<td>' + escapeHtml(a.title) + '</td>' +
         '<td>' + formatDuration(a.duration_seconds) + '</td>' +
         '<td>' + escapeHtml(a.distance) + '</td>' +
         '<td>' + escapeHtml(a.elevation) + '</td>' +
+        '<td>' + escapeHtml(a.pace || '') + '</td>' +
         '<td><a class="view-btn" href="/activities/' + encodeURIComponent(a.activity_id) + '">View report</a></td>';
       tbody.appendChild(tr);
     }
     document.getElementById('summaryLine').textContent = acts.length + ' activit' + (acts.length === 1 ? 'y' : 'ies') + ' on file.';
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:var(--danger)">Failed to load: ' + escapeHtml(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty" style="color:var(--danger)">Failed to load: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
 
