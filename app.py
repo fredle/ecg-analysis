@@ -1184,6 +1184,61 @@ def upload():
     return redirect(url_for("analyse", session_id=session_id))
 
 
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    """JSON-only upload endpoint for the iOS app."""
+    if "files" not in request.files:
+        return jsonify({"error": "No files selected"}), 400
+
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        return jsonify({"error": "No files selected"}), 400
+
+    session_id = uuid.uuid4().hex[:12]
+    session_dir = os.path.join(UPLOAD_FOLDER, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+
+    registry = _load_upload_registry()
+    accepted = []
+    for f in files:
+        if not f.filename or not is_valid_r_filename(f.filename):
+            continue
+
+        tmp_dest = os.path.join(session_dir, f.filename + ".tmp")
+        f.save(tmp_dest)
+        file_size = os.path.getsize(tmp_dest)
+        dest = os.path.join(session_dir, f.filename)
+
+        if registry.get(f.filename) == file_size:
+            # Already have this file — copy from raw archive into session
+            os.remove(tmp_dest)
+            raw_src = os.path.join(RAW_DIR, f.filename)
+            if os.path.isfile(raw_src):
+                shutil.copy2(raw_src, dest)
+                accepted.append(f.filename)
+            continue
+
+        os.rename(tmp_dest, dest)
+        accepted.append(f.filename)
+
+        raw_dest = os.path.join(RAW_DIR, f.filename)
+        shutil.copy2(dest, raw_dest)
+        log.info("Stored raw file: %s", raw_dest)
+
+        registry[f.filename] = file_size
+        _save_upload_registry(registry)
+
+    if not accepted:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return jsonify({"error": "No valid R-files were uploaded"}), 400
+
+    return jsonify({
+        "session_id": session_id,
+        "files": accepted,
+        "count": len(accepted),
+    }), 200
+
+
 @app.route("/api/inference/<session_id>", methods=["POST"])
 def api_inference_start(session_id):
     """Kick off inference for an uploaded session. Returns immediately."""

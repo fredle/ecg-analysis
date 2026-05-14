@@ -102,7 +102,9 @@ struct LibraryView: View {
                     NavigationLink {
                         RecordingDetailView(recording: rec)
                     } label: {
-                        RecordingRow(recording: rec)
+                        RecordingRow(recording: rec) {
+                            uploadQueue.retry(rec)
+                        }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if rec.uploadState == .failed || rec.uploadState == .pending {
@@ -197,6 +199,7 @@ struct LibraryView: View {
 
 private struct RecordingRow: View {
     let recording: Recording
+    var onRetry: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -213,8 +216,21 @@ private struct RecordingRow: View {
                     .foregroundStyle(.secondary)
             }
             .font(.caption)
-            if let err = recording.uploadError, recording.uploadState == .failed {
-                Text(err).font(.caption2).foregroundStyle(.red).lineLimit(2)
+            if recording.uploadState == .failed {
+                HStack(spacing: 6) {
+                    if let err = recording.uploadError {
+                        Text(err).foregroundStyle(.red).lineLimit(2)
+                    }
+                    Spacer()
+                    if let onRetry {
+                        Button(action: onRetry) {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
+                }
+                .font(.caption2)
             }
         }
     }

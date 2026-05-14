@@ -33,7 +33,7 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
     func upload(fileURL: URL, filename: String) async throws -> APIClient.UploadResult {
         let (tmpURL, boundary) = try APIClient.writeMultipartFile(fileURL: fileURL, filename: filename)
 
-        let uploadURL = AppConfig.baseURL.appendingPathComponent("upload")
+        let uploadURL = AppConfig.baseURL.appendingPathComponent("api/upload")
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -65,8 +65,10 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
             throw APIError.http(http.statusCode, String(data: data, encoding: .utf8))
         }
 
-        let decoded = try JSONDecoder().decode(APIClient.UploadResponse.self, from: data)
-        return .accepted(sessionId: decoded.session_id)
+        if let decoded = try? JSONDecoder().decode(APIClient.UploadResponse.self, from: data) {
+            return .accepted(sessionId: decoded.session_id)
+        }
+        return .skipped
     }
 
     // MARK: - URLSessionDataDelegate

@@ -101,10 +101,9 @@ struct APIClient: Sendable {
         case skipped
     }
 
-    /// POST /upload with Accept: application/json. Returns session info as JSON
-    /// immediately once files are saved — no redirect, no waiting for inference.
+    /// POST /api/upload — JSON-only endpoint. Returns session info immediately.
     func uploadRFile(fileURL: URL, filename: String) async throws -> UploadResult {
-        let uploadURL = baseURL.appendingPathComponent("upload")
+        let uploadURL = baseURL.appendingPathComponent("api/upload")
         let boundary = "Boundary-\(UUID().uuidString)"
 
         var request = URLRequest(url: uploadURL)
@@ -123,14 +122,16 @@ struct APIClient: Sendable {
             }
 
             if http.statusCode == 400 {
-                // Server says no valid files (duplicate) — treat as skipped
                 return .skipped
             }
 
             try check(response: response, data: data)
 
-            let decoded = try JSONDecoder().decode(UploadResponse.self, from: data)
-            return .accepted(sessionId: decoded.session_id)
+            // Server returns session_id when files were saved, or just skipped[] for dupes
+            if let decoded = try? JSONDecoder().decode(UploadResponse.self, from: data) {
+                return .accepted(sessionId: decoded.session_id)
+            }
+            return .skipped
         } catch let e as APIError {
             throw e
         } catch let e as URLError {
