@@ -14,7 +14,7 @@ import struct
 import shutil
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -42,6 +42,40 @@ MODEL_PATH = os.path.join(MODEL_DIR, "model.keras")
 UPLOAD_REGISTRY_PATH = os.path.join(DATA_DIR, "upload_registry.json")
 ACTIVITIES_PARQUET_PATH = os.path.join(DATA_DIR, "activities.parquet")
 EVENTS_PARQUET_PATH = os.path.join(DATA_DIR, "events.parquet")
+INFERENCE_STATUS_PATH = os.path.join(DATA_DIR, "inference_status.json")
+
+# In-memory inference status: {session_id: {status, error?, files}}
+_inference_lock = threading.Lock()
+
+def _load_inference_status() -> dict:
+    if os.path.exists(INFERENCE_STATUS_PATH):
+        try:
+            with open(INFERENCE_STATUS_PATH, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            pass
+    return {}
+
+def _save_inference_status(store: dict) -> None:
+    with open(INFERENCE_STATUS_PATH, "w", encoding="utf-8") as fh:
+        json.dump(store, fh, indent=2)
+
+def _set_inference_status(session_id: str, status: str, error: str | None = None):
+    with _inference_lock:
+        store = _load_inference_status()
+        entry = store.get(session_id, {})
+        entry["status"] = status
+        if error:
+            entry["error"] = error
+        elif "error" in entry:
+            del entry["error"]
+        store[session_id] = entry
+        _save_inference_status(store)
+
+def _get_inference_status(session_id: str) -> dict | None:
+    with _inference_lock:
+        store = _load_inference_status()
+        return store.get(session_id)
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
@@ -1075,12 +1109,22 @@ def api_reprocess():
 def upload():
     if request.method == "GET":
         return render_template("index.html")
+
+    wants_json = (
+        request.accept_mimetypes.best_match(["application/json", "text/html"])
+        == "application/json"
+    )
+
     if "files" not in request.files:
+        if wants_json:
+            return jsonify({"error": "No files selected"}), 400
         flash("No files selected.", "error")
         return redirect(url_for("upload"))
 
     files = request.files.getlist("files")
     if not files or all(f.filename == "" for f in files):
+        if wants_json:
+            return jsonify({"error": "No files selected"}), 400
         flash("No files selected.", "error")
         return redirect(url_for("upload"))
 
@@ -1125,9 +1169,81 @@ def upload():
     if not saved:
         flash("No valid R-files were uploaded.", "error")
         shutil.rmtree(session_dir, ignore_errors=True)
+        if wants_json:
+            return jsonify({"error": "No valid R-files were uploaded"}), 400
         return redirect(url_for("upload"))
 
+    if wants_json:
+        filenames = [os.path.basename(p) for p in saved]
+        return jsonify({
+            "session_id": session_id,
+            "files": filenames,
+            "count": len(filenames),
+        }), 200
+
     return redirect(url_for("analyse", session_id=session_id))
+
+
+@app.route("/api/inference/<session_id>", methods=["POST"])
+def api_inference_start(session_id):
+    """Kick off inference for an uploaded session. Returns immediately."""
+    session_dir = os.path.join(UPLOAD_FOLDER, session_id)
+    if not os.path.isdir(session_dir):
+        return jsonify({"error": "Session not found"}), 404
+
+    r_files = sorted([
+        os.path.join(session_dir, f)
+        for f in os.listdir(session_dir)
+        if re.search(r"R\d{14}$", f)
+    ])
+    if not r_files:
+        return jsonify({"error": "No R-files found"}), 400
+
+    existing = _get_inference_status(session_id)
+    if existing and existing.get("status") == "processing":
+        return jsonify({"session_id": session_id, "status": "processing"}), 200
+
+    _set_inference_status(session_id, "processing")
+
+    def run():
+        try:
+            report = analyse_files(r_files)
+            save_episodes_to_parquet(report)
+            save_hourly_to_parquet(report)
+            report_path = os.path.join(session_dir, "report.json")
+            with open(report_path, "w") as f:
+                json.dump(report, f)
+            _set_inference_status(session_id, "done")
+            log.info("Inference complete for session %s", session_id)
+        except Exception as e:
+            log.exception("Inference failed for session %s", session_id)
+            _set_inference_status(session_id, "error", str(e))
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+
+    return jsonify({
+        "session_id": session_id,
+        "status": "processing",
+        "file_count": len(r_files),
+    }), 202
+
+
+@app.route("/api/inference/<session_id>/status")
+def api_inference_status(session_id):
+    """Poll inference status for a session."""
+    session_dir = os.path.join(UPLOAD_FOLDER, session_id)
+    if not os.path.isdir(session_dir):
+        return jsonify({"error": "Session not found"}), 404
+
+    entry = _get_inference_status(session_id)
+    if entry is None:
+        return jsonify({"session_id": session_id, "status": "pending"}), 200
+
+    resp = {"session_id": session_id, "status": entry["status"]}
+    if "error" in entry:
+        resp["error"] = entry["error"]
+    return jsonify(resp), 200
 
 
 @app.route("/analyse/<session_id>")
@@ -1463,9 +1579,11 @@ def api_ecg_raw():
     if not center_str:
         return jsonify({"error": "center parameter required"}), 400
     try:
-        center_dt = datetime.fromisoformat(center_str)
+        center_dt = datetime.fromisoformat(center_str.replace("Z", "+00:00"))
     except ValueError:
         return jsonify({"error": f"Invalid center timestamp: {center_str!r}"}), 400
+    if center_dt.tzinfo is not None:
+        center_dt = center_dt.astimezone(timezone.utc).replace(tzinfo=None)
     try:
         window_sec = max(10, min(3600, int(request.args.get("window", 120))))
     except ValueError:

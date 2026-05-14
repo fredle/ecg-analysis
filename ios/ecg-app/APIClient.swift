@@ -74,7 +74,7 @@ struct APIClient: Sendable {
 
     func ecgRaw(center: Date, windowSec: Int) async throws -> ECGRawWindow {
         try await get("api/ecg_raw", query: [
-            URLQueryItem(name: "center", value: APIDate.iso.string(from: center)),
+            URLQueryItem(name: "center", value: APIDate.spaced.string(from: center)),
             URLQueryItem(name: "window", value: "\(windowSec)"),
         ])
     }
@@ -88,16 +88,21 @@ struct APIClient: Sendable {
         ])
     }
 
-    // MARK: - Upload
+    // MARK: - Upload (JSON API)
+
+    struct UploadResponse: Decodable {
+        let session_id: String
+        let files: [String]
+        let count: Int
+    }
 
     enum UploadResult {
         case accepted(sessionId: String)
         case skipped
     }
 
-    /// POST /upload multipart. Returns `.accepted(sessionId)` when the server
-    /// redirects to `/analyse/<id>`, or `.skipped` when it redirects back to
-    /// `/upload` (server-side duplicate detection).
+    /// POST /upload with Accept: application/json. Returns session info as JSON
+    /// immediately once files are saved — no redirect, no waiting for inference.
     func uploadRFile(fileURL: URL, filename: String) async throws -> UploadResult {
         let uploadURL = baseURL.appendingPathComponent("upload")
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -105,39 +110,72 @@ struct APIClient: Sendable {
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 600
 
         let body = try buildMultipartBody(fileURL: fileURL, filename: filename, boundary: boundary)
         request.httpBody = body
-        request.timeoutInterval = 600
 
-        let delegate = RedirectCapturingDelegate()
         do {
-            let (data, response) = try await session.data(for: request, delegate: delegate)
-
-            if let loc = delegate.redirectLocation {
-                if let id = extractSessionId(from: loc) {
-                    return .accepted(sessionId: id)
-                }
-                // Flask redirects dupes back to /upload — treat that as skipped.
-                if loc.path.hasSuffix("/upload") || loc.path == "/upload" {
-                    return .skipped
-                }
-            }
-            if let http = response as? HTTPURLResponse,
-               http.statusCode == 200,
-               let url = http.url,
-               let id = extractSessionId(from: url) {
-                return .accepted(sessionId: id)
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.http(0, nil)
             }
 
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw APIError.http(code, String(data: data, encoding: .utf8))
+            if http.statusCode == 400 {
+                // Server says no valid files (duplicate) — treat as skipped
+                return .skipped
+            }
+
+            try check(response: response, data: data)
+
+            let decoded = try JSONDecoder().decode(UploadResponse.self, from: data)
+            return .accepted(sessionId: decoded.session_id)
+        } catch let e as APIError {
+            throw e
+        } catch let e as URLError {
+            throw APIError.network(e)
+        } catch let e as DecodingError {
+            throw APIError.decoding(e)
+        }
+    }
+
+    // MARK: - Inference
+
+    struct InferenceResponse: Decodable {
+        let session_id: String
+        let status: String
+    }
+
+    /// POST /api/inference/<session_id> — kicks off inference and returns immediately.
+    func startInference(sessionId: String) async throws {
+        let url = baseURL.appendingPathComponent("api/inference/\(sessionId)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            try check(response: response, data: data)
         } catch let e as APIError {
             throw e
         } catch let e as URLError {
             throw APIError.network(e)
         }
     }
+
+    struct InferenceStatus: Decodable {
+        let session_id: String
+        let status: String   // "pending", "processing", "done", "error"
+        let error: String?
+    }
+
+    /// GET /api/inference/<session_id>/status — poll for inference progress.
+    func inferenceStatus(sessionId: String) async throws -> InferenceStatus {
+        try await get("api/inference/\(sessionId)/status")
+    }
+
+    // MARK: - Multipart helpers
 
     private func buildMultipartBody(fileURL: URL, filename: String, boundary: String) throws -> Data {
         var body = Data()
@@ -150,19 +188,25 @@ struct APIClient: Sendable {
         return body
     }
 
-    private func extractSessionId(from url: URL) -> String? {
-        let parts = url.pathComponents
-        if let idx = parts.firstIndex(of: "analyse"), idx + 1 < parts.count {
-            return parts[idx + 1]
-        }
-        return nil
+    /// Write multipart body to a temp file for background upload tasks.
+    static func writeMultipartFile(fileURL: URL, filename: String) throws -> (URL, String) {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        let fileData = try Data(contentsOf: fileURL)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".multipart")
+        try body.write(to: tmpURL)
+        return (tmpURL, boundary)
     }
 
-    // MARK: - SSE
+    // MARK: - SSE (kept for web compatibility)
 
-    /// Streams `/api/stream/<session_id>` server-sent events.
-    /// Emits one `ProgressEvent` per event block; terminates the stream after
-    /// receiving `done` or `error`.
     func streamProgress(sessionId: String) -> AsyncThrowingStream<ProgressEvent, Error> {
         let url = baseURL.appendingPathComponent("api/stream/\(sessionId)")
         let session = self.session
@@ -210,18 +254,5 @@ struct APIClient: Sendable {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-}
-
-final class RedirectCapturingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    var redirectLocation: URL?
-
-    func urlSession(_ session: URLSession,
-                    task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
-        redirectLocation = request.url
-        completionHandler(nil)
     }
 }

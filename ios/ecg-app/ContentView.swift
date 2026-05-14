@@ -50,54 +50,158 @@ struct ContentView: View {
 
 private struct LiveView: View {
     @Environment(ECGCoordinator.self) private var coordinator
+    @State private var secondsPerRow: Int = 10
+    @State private var ampGain: Double = 0.5
+
+    private static let rowOptions: [Int] = [5, 10, 15, 20, 30]
+    private static let gainOptions: [Double] = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Live ECG") {
-                    WaveformView(samples: coordinator.client.displaySamples,
-                                 latestSampleTime: coordinator.client.lastPacketAt,
-                                 windowSize: ER1Client.displayWindow,
-                                 fillerSentinel: ER1Client.fillerSample)
-                        .frame(height: 180)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                }
-
-                Section("Device") {
-                    LabeledContent("Status", value: deviceStatus)
-                    LabeledContent("Heart rate",
-                                   value: coordinator.client.lastBPM > 0 ? "\(coordinator.client.lastBPM) bpm" : "—")
-                    LabeledContent("Battery", value: "\(coordinator.client.batteryPct)%")
-                    LabeledContent("Samples", value: "\(coordinator.client.totalSamples)")
-                }
-
-                Section("HR Relay") {
-                    LabeledContent("Advertising",
-                                   value: coordinator.hr.state == .advertising ? "Yes" : "No")
-                    LabeledContent("Subscribers", value: "\(coordinator.hr.subscriberCount)")
-                    LabeledContent("Last BPM sent",
-                                   value: coordinator.hr.currentBPM > 0 ? "\(coordinator.hr.currentBPM)" : "—")
-                }
-
-                Section("Recording") {
-                    if coordinator.isRecording {
-                        Button(role: .destructive) { coordinator.stopRecording() } label: {
-                            Label("Stop recording", systemImage: "stop.circle.fill")
-                        }
-                    } else {
-                        Button { coordinator.startRecording() } label: {
-                            Label("Start recording", systemImage: "record.circle")
-                        }
-                        .disabled(!isConnected)
-                    }
-                    if let err = coordinator.recordingError {
-                        Text(err).font(.caption).foregroundStyle(.red)
-                    }
-                }
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemBackground))
+                Divider()
+                paperContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemGroupedBackground))
             }
             .navigationTitle("Live")
         }
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        VStack(spacing: 6) {
+            HStack {
+                statusBadge
+                Spacer()
+                if coordinator.client.lastBPM > 0 {
+                    HStack(spacing: 2) {
+                        Text("\(coordinator.client.lastBPM)")
+                            .font(.title2.bold().monospacedDigit())
+                        Text("bpm").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: "battery.100")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("\(coordinator.client.batteryPct)%")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                recordButton
+            }
+
+            WaveformView(
+                samples: coordinator.client.displaySamples,
+                latestSampleTime: coordinator.client.lastPacketAt,
+                windowSize: ER1Client.displayWindow,
+                fillerSentinel: ER1Client.fillerSample
+            )
+            .frame(height: 60)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            HStack(spacing: 12) {
+                zoomControl(label: "Time", value: "\(secondsPerRow)s",
+                            canStep: canStep(secondsPerRow, in: Self.rowOptions),
+                            onDecrease: { step(&secondsPerRow, in: Self.rowOptions, dir: -1) },
+                            onIncrease: { step(&secondsPerRow, in: Self.rowOptions, dir: 1) })
+                zoomControl(label: "Gain", value: formatGain(ampGain),
+                            canStep: canStep(ampGain, in: Self.gainOptions),
+                            onDecrease: { step(&ampGain, in: Self.gainOptions, dir: -1) },
+                            onIncrease: { step(&ampGain, in: Self.gainOptions, dir: 1) })
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var paperContent: some View {
+        if isConnected {
+            if coordinator.client.paperSamples.isEmpty {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Waiting for ECG data…")
+                        .foregroundStyle(.secondary).font(.caption)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                LivePaperView(
+                    client: coordinator.client,
+                    secondsPerRow: secondsPerRow,
+                    ampGain: ampGain
+                )
+            }
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.largeTitle).foregroundStyle(.secondary)
+                Text(deviceStatus)
+                    .foregroundStyle(.secondary).font(.caption)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var statusBadge: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(isConnected ? Color.green : Color.orange)
+                .frame(width: 8, height: 8)
+            Text(deviceStatus)
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var recordButton: some View {
+        if coordinator.isRecording {
+            Button(role: .destructive) { coordinator.stopRecording() } label: {
+                Image(systemName: "stop.circle.fill")
+                    .foregroundStyle(.red)
+            }
+        } else {
+            Button { coordinator.startRecording() } label: {
+                Image(systemName: "record.circle")
+            }
+            .disabled(!isConnected)
+        }
+    }
+
+    private func zoomControl(label: String, value: String,
+                             canStep: (Bool, Bool),
+                             onDecrease: @escaping () -> Void,
+                             onIncrease: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Button(action: onDecrease) {
+                Image(systemName: "minus").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.bordered).disabled(!canStep.0)
+            Text(value).font(.caption.monospaced()).frame(minWidth: 40)
+            Button(action: onIncrease) {
+                Image(systemName: "plus").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.bordered).disabled(!canStep.1)
+        }
+    }
+
+    private func canStep<T: Equatable>(_ current: T, in options: [T]) -> (Bool, Bool) {
+        guard let i = options.firstIndex(of: current) else { return (false, false) }
+        return (i > 0, i < options.count - 1)
+    }
+
+    private func step<T: Equatable>(_ value: inout T, in options: [T], dir: Int) {
+        guard let i = options.firstIndex(of: value) else { return }
+        let j = i + dir
+        guard j >= 0, j < options.count else { return }
+        value = options[j]
+    }
+
+    private func formatGain(_ g: Double) -> String {
+        g == g.rounded() ? "\(Int(g))×" : String(format: "%.1f×", g)
     }
 
     private var isConnected: Bool {
@@ -108,7 +212,7 @@ private struct LiveView: View {
     private var deviceStatus: String {
         switch coordinator.client.state {
         case .poweredOff:        return "Bluetooth off"
-        case .unauthorized:      return "Bluetooth not authorized"
+        case .unauthorized:      return "Not authorized"
         case .idle:              return "Idle"
         case .scanning:          return "Scanning…"
         case .connecting(let n): return "Connecting \(n)…"

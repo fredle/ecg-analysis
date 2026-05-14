@@ -12,6 +12,7 @@ struct LibraryView: View {
     @State private var syncStatus: String?
     @State private var isSyncing = false
     @State private var showingPicker = false
+    @State private var safeToDisconnect = false
 
     var body: some View {
         NavigationStack {
@@ -40,6 +41,23 @@ struct LibraryView: View {
 
     private var usbSection: some View {
         Section("USB import") {
+            if safeToDisconnect {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Files saved \u{2014} safe to disconnect")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Button {
+                        withAnimation { safeToDisconnect = false }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
             Menu {
                 Button("Sync now") { runSync() }
                     .disabled(isSyncing || bookmarkData == nil)
@@ -134,6 +152,7 @@ struct LibraryView: View {
 
         isSyncing = true
         syncStatus = nil
+        safeToDisconnect = false
         let container = modelContext.container
         Task {
             let importer = USBImporter(modelContainer: container)
@@ -147,6 +166,7 @@ struct LibraryView: View {
                     if !result.failures.isEmpty { parts.append("\(result.failures.count) failed") }
                     syncStatus = parts.joined(separator: ", ")
                 }
+                withAnimation { safeToDisconnect = true }
             } catch {
                 syncStatus = "Sync failed: \(error.localizedDescription)"
             }
@@ -228,6 +248,7 @@ private struct UploadBadge: View {
         case .notApplicable: return "iphone"
         case .pending:       return "arrow.up.circle"
         case .uploading:     return "arrow.up.circle.dotted"
+        case .uploaded:      return "brain"
         case .analyzed:      return "checkmark.seal.fill"
         case .skipped:       return "equal.circle"
         case .failed:        return "exclamationmark.triangle.fill"
@@ -239,7 +260,8 @@ private struct UploadBadge: View {
         case .notApplicable: return source == .liveLocal ? "Local only" : "—"
         case .pending:       return "Queued"
         case .uploading:     return "Uploading"
-        case .analyzed:      return "Uploaded"
+        case .uploaded:      return "Analysing"
+        case .analyzed:      return "Done"
         case .skipped:       return "Skipped (dup)"
         case .failed:        return "Failed"
         }
@@ -250,6 +272,7 @@ private struct UploadBadge: View {
         case .notApplicable: return .secondary
         case .pending:       return .blue
         case .uploading:     return .blue
+        case .uploaded:      return .purple
         case .analyzed:      return .green
         case .skipped:       return .gray
         case .failed:        return .orange
@@ -277,7 +300,7 @@ private struct UploadSummary: View {
         for r in recordings {
             switch r.uploadState {
             case .analyzed: a += 1
-            case .pending, .uploading: i += 1
+            case .pending, .uploading, .uploaded: i += 1
             case .skipped: s += 1
             case .failed: f += 1
             case .notApplicable: break

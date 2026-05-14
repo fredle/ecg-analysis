@@ -5,21 +5,32 @@ import SwiftData
 @Observable
 final class UploadQueue {
     private weak var modelContext: ModelContext?
-    private var task: Task<Void, Never>?
+    private var uploadTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
 
     var queueDepth: Int = 0
     var isUploading: Bool = false
     var lastError: String?
+
+    private static let pollInterval: UInt64 = 5_000_000_000 // 5 seconds
 
     func attach(context: ModelContext) {
         self.modelContext = context
     }
 
     func kick() {
-        guard task == nil, modelContext != nil else { return }
-        task = Task { [weak self] in
-            await self?.run()
-            self?.task = nil
+        guard modelContext != nil else { return }
+        if uploadTask == nil {
+            uploadTask = Task { [weak self] in
+                await self?.runUploads()
+                self?.uploadTask = nil
+            }
+        }
+        if pollTask == nil {
+            pollTask = Task { [weak self] in
+                await self?.runInferencePoll()
+                self?.pollTask = nil
+            }
         }
     }
 
@@ -30,7 +41,9 @@ final class UploadQueue {
         kick()
     }
 
-    private func run() async {
+    // MARK: - Phase 1: Upload files
+
+    private func runUploads() async {
         guard let context = modelContext else { return }
         while !Task.isCancelled {
             let pendingRaw = UploadState.pending.rawValue
@@ -45,18 +58,18 @@ final class UploadQueue {
                 return
             }
             isUploading = true
-            await processOne(rec, in: context)
+            await uploadOne(rec, in: context)
         }
         isUploading = false
     }
 
-    private func processOne(_ rec: Recording, in context: ModelContext) async {
+    private func uploadOne(_ rec: Recording, in context: ModelContext) async {
         rec.uploadStateRaw = UploadState.uploading.rawValue
         rec.uploadError = nil
         try? context.save()
 
         do {
-            let result = try await APIClient.shared.uploadRFile(
+            let result = try await BackgroundUploader.shared.upload(
                 fileURL: rec.fileURL,
                 filename: rec.filename
             )
@@ -69,33 +82,66 @@ final class UploadQueue {
 
             case .accepted(let sessionId):
                 rec.remoteSessionId = sessionId
+                rec.uploadStateRaw = UploadState.uploaded.rawValue
                 try? context.save()
 
-                var resolved = false
-                for try await event in APIClient.shared.streamProgress(sessionId: sessionId) {
-                    switch event.kind {
-                    case .done:
-                        rec.uploadStateRaw = UploadState.analyzed.rawValue
-                        resolved = true
-                    case .error:
-                        rec.uploadStateRaw = UploadState.failed.rawValue
-                        rec.uploadError = event.data
-                        resolved = true
-                    default:
-                        break
-                    }
-                }
-                if !resolved {
+                // Kick off inference on the server (fire and forget from upload perspective)
+                do {
+                    try await APIClient.shared.startInference(sessionId: sessionId)
+                } catch {
+                    // Inference start failed — mark as failed so user can retry
                     rec.uploadStateRaw = UploadState.failed.rawValue
-                    rec.uploadError = "Stream ended without result"
+                    rec.uploadError = "Inference start failed: \(error.localizedDescription)"
+                    try? context.save()
                 }
-                try? context.save()
             }
         } catch {
             rec.uploadStateRaw = UploadState.failed.rawValue
             rec.uploadError = error.localizedDescription
             lastError = error.localizedDescription
             try? context.save()
+        }
+    }
+
+    // MARK: - Phase 2: Poll for inference completion
+
+    private func runInferencePoll() async {
+        guard let context = modelContext else { return }
+        while !Task.isCancelled {
+            let uploadedRaw = UploadState.uploaded.rawValue
+            let desc = FetchDescriptor<Recording>(
+                predicate: #Predicate<Recording> { $0.uploadStateRaw == uploadedRaw },
+                sortBy: [SortDescriptor(\Recording.startedAt)]
+            )
+            let uploaded = (try? context.fetch(desc)) ?? []
+
+            if uploaded.isEmpty {
+                // Nothing to poll — wait and check again
+                try? await Task.sleep(nanoseconds: Self.pollInterval)
+                continue
+            }
+
+            for rec in uploaded {
+                guard let sessionId = rec.remoteSessionId else { continue }
+                do {
+                    let status = try await APIClient.shared.inferenceStatus(sessionId: sessionId)
+                    switch status.status {
+                    case "done":
+                        rec.uploadStateRaw = UploadState.analyzed.rawValue
+                        try? context.save()
+                    case "error":
+                        rec.uploadStateRaw = UploadState.failed.rawValue
+                        rec.uploadError = status.error ?? "Inference failed"
+                        try? context.save()
+                    default:
+                        break // still processing, check again next cycle
+                    }
+                } catch {
+                    // Network error polling — don't mark as failed, just retry next cycle
+                }
+            }
+
+            try? await Task.sleep(nanoseconds: Self.pollInterval)
         }
     }
 }

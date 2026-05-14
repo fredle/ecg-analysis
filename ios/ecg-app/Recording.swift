@@ -10,6 +10,7 @@ enum UploadState: String, Codable {
     case notApplicable
     case pending
     case uploading
+    case uploaded   // files on server, inference not yet complete
     case analyzed
     case skipped
     case failed

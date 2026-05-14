@@ -1,6 +1,10 @@
 services:
   ecg-analyser:
-    build: .
+    image: ecg-analyser:latest
+    build:
+      context: .
+      platforms:
+        - linux/amd64
     ports:
       - "5000:5000"
     volumes:

@@ -15,6 +15,14 @@ final class ER1Client: NSObject {
     }
 
     private(set) var state: State = .idle
+
+    var deviceName: String {
+        switch state {
+        case .connected(let name), .connecting(let name): return name
+        default: return "ER1"
+        }
+    }
+
     private(set) var batteryPct: Int = 0
     private(set) var batteryState: Int = 0
     private(set) var leadConnected: Bool = true
@@ -24,6 +32,14 @@ final class ER1Client: NSObject {
 
     static let displayWindow: Int = 750
     private(set) var displaySamples: [Int16] = []
+
+    // Paper ECG rolling buffer — raw samples without playback smoothing
+    static let paperCapacity: Int = 180 * 125
+    private(set) var paperSamples: [Int16] = []
+    private(set) var paperGaps: [ClosedRange<Int>] = []
+    private(set) var paperStartMs: Int64 = 0
+    private(set) var paperValueMid: Double = 0
+    private(set) var paperValueHalfSpan: Double = 500
 
     // Playback buffering — BLE packets land ~1/s in 128-sample bursts;
     // we drip-feed them into `displaySamples` at a steady rate so the
@@ -39,6 +55,8 @@ final class ER1Client: NSObject {
     @ObservationIgnored private var pending: [Int16] = []
     @ObservationIgnored private var samplesOwed: Double = 0
     @ObservationIgnored private var playbackTask: Task<Void, Never>?
+    @ObservationIgnored private var lastChunkArrival: Date?
+    @ObservationIgnored private var paperScaleCounter: Int = 0
 
     var onSamples: (([Int16]) -> Void)?
     var onBPM: ((Int) -> Void)?
@@ -272,6 +290,69 @@ extension ER1Client: CBPeripheralDelegate {
         samplesOwed = 0
     }
 
+    private func appendToPaper(_ newSamples: [Int16]) {
+        let now = Date()
+
+        if paperSamples.isEmpty {
+            let offsetMs = Int64(Double(newSamples.count) / Self.sampleRate * 1000)
+            paperStartMs = Int64(now.timeIntervalSince1970 * 1000) - offsetMs
+        } else if let last = lastChunkArrival {
+            let elapsed = now.timeIntervalSince(last)
+            let expected = 128.0 / Self.sampleRate
+            if elapsed > expected * 1.8 {
+                let gapSamples = Int((elapsed - expected) * Self.sampleRate)
+                if gapSamples > Int(30.0 * Self.sampleRate) {
+                    paperSamples.removeAll()
+                    paperGaps.removeAll()
+                    let offsetMs = Int64(Double(newSamples.count) / Self.sampleRate * 1000)
+                    paperStartMs = Int64(now.timeIntervalSince1970 * 1000) - offsetMs
+                } else if gapSamples > 0 {
+                    let gapStart = paperSamples.count
+                    paperSamples.append(contentsOf: Array(repeating: 0, count: gapSamples))
+                    paperGaps.append(gapStart...(gapStart + gapSamples - 1))
+                }
+            }
+        }
+        lastChunkArrival = now
+        paperSamples.append(contentsOf: newSamples)
+
+        if paperSamples.count > Self.paperCapacity {
+            let excess = paperSamples.count - Self.paperCapacity
+            paperSamples.removeFirst(excess)
+            paperStartMs += Int64(Double(excess) / Self.sampleRate * 1000)
+            paperGaps = paperGaps.compactMap { g in
+                if g.upperBound < excess { return nil }
+                return Swift.max(0, g.lowerBound - excess)...(g.upperBound - excess)
+            }
+        }
+
+        paperScaleCounter += 1
+        if paperScaleCounter % 5 == 0 || paperSamples.count < 1000 {
+            recomputePaperScale()
+        }
+    }
+
+    private func recomputePaperScale() {
+        guard paperSamples.count > 100 else { return }
+        let step = Swift.max(1, paperSamples.count / 2000)
+        var vals: [Int16] = []
+        vals.reserveCapacity(2000)
+        var gIdx = 0
+        var i = 0
+        while i < paperSamples.count {
+            while gIdx < paperGaps.count && paperGaps[gIdx].upperBound < i { gIdx += 1 }
+            if gIdx < paperGaps.count && paperGaps[gIdx].contains(i) { i += 1; continue }
+            vals.append(paperSamples[i])
+            i += step
+        }
+        guard vals.count > 10 else { return }
+        vals.sort()
+        let p05 = Double(vals[Int(Double(vals.count) * 0.05)])
+        let p95 = Double(vals[Int(Double(vals.count) * 0.95)])
+        paperValueMid = (p05 + p95) / 2.0
+        paperValueHalfSpan = Swift.max(p95 - p05, 400.0) / 2.0 * 1.2
+    }
+
     private func playbackTick() {
         samplesOwed += Self.sampleRate / Self.playbackRate
 
@@ -308,7 +389,11 @@ extension ER1Client: CBPeripheralDelegate {
                 lastPacketAt = Date()
                 totalSamples += ecg.samples.count
                 enqueueForPlayback(ecg.samples)
+                appendToPaper(ecg.samples)
                 onSamples?(ecg.samples)
+                // Request next packet immediately — keeps streaming alive
+                // in background when the 1s Timer is suspended by iOS.
+                send(.getRtData, payload: [0x7D])
             }
         }
     }

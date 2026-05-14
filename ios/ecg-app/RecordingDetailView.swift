@@ -4,8 +4,8 @@ struct RecordingDetailView: View {
     let recording: Recording
 
     @State private var samples: [Int16] = []
-    @State private var windowSeconds: Double = 6
-    @State private var startSecond: Double = 0
+    @State private var secondsPerRow: Int = 10
+    @State private var ampGain: Double = 0.5
 
     private let sampleRate: Double = 125
 
@@ -13,90 +13,162 @@ struct RecordingDetailView: View {
         Double(samples.count) / sampleRate
     }
 
-    private var windowSampleCount: Int {
-        max(1, Int(windowSeconds * sampleRate))
-    }
-
-    private var visibleSamples: [Int16] {
-        let start = Int(startSecond * sampleRate)
-        guard start < samples.count else { return [] }
-        let end = min(samples.count, start + windowSampleCount)
-        return Array(samples[start..<end])
-    }
-
-    private var maxStartSecond: Double {
-        max(0, durationSeconds - windowSeconds)
-    }
+    private static let rowOptions: [Int] = [5, 10, 15, 20, 30]
+    private static let gainOptions: [Double] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                WaveformView(samples: visibleSamples, windowSize: windowSampleCount)
-                    .frame(height: 260)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                VStack(spacing: 10) {
-                    HStack {
-                        Text(timeLabel(startSecond))
-                        Spacer()
-                        Text("\(Int(windowSeconds))s window")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(timeLabel(durationSeconds))
-                    }
-                    .font(.caption.monospacedDigit())
-
-                    Slider(value: $startSecond, in: 0...max(maxStartSecond, 0.001))
-                        .disabled(maxStartSecond <= 0)
-
-                    Picker("Window", selection: $windowSeconds) {
-                        Text("3s").tag(3.0)
-                        Text("6s").tag(6.0)
-                        Text("10s").tag(10.0)
-                        Text("30s").tag(30.0)
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: windowSeconds) { _, _ in
-                        startSecond = min(startSecond, maxStartSecond)
-                    }
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color(.systemBackground))
+            Divider()
+            if samples.isEmpty {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading…").foregroundStyle(.secondary).font(.caption)
                 }
-
-                GroupBox("Details") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        detailRow("Filename", recording.filename)
-                        detailRow("Started",
-                                  recording.startedAt.formatted(date: .abbreviated, time: .standard))
-                        if let ended = recording.endedAt {
-                            detailRow("Ended",
-                                      ended.formatted(date: .abbreviated, time: .standard))
-                        }
-                        detailRow("Duration", timeLabel(durationSeconds))
-                        detailRow("Samples", recording.sampleCount.formatted())
-                        detailRow("Size", ByteCountFormatter.string(
-                            fromByteCount: Int64(recording.byteCount), countStyle: .file))
-                        if let device = recording.deviceId {
-                            detailRow("Device", device)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                paperScroller
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemGroupedBackground))
             }
-            .padding()
         }
         .navigationTitle(recording.filename)
         .task(id: recording.id) {
             samples = recording.loadSamples()
-            startSecond = 0
         }
     }
 
+    // MARK: - Header
+
     @ViewBuilder
-    private func detailRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).font(.body.monospacedDigit())
+    private var header: some View {
+        VStack(spacing: 10) {
+            detailsBar
+
+            HStack(spacing: 12) {
+                zoomControl(
+                    label: "Time",
+                    value: "\(secondsPerRow)s",
+                    canDecrease: canStep(Self.rowOptions, current: secondsPerRow, dir: -1),
+                    canIncrease: canStep(Self.rowOptions, current: secondsPerRow, dir: 1),
+                    onDecrease: { step(Self.rowOptions, current: &secondsPerRow, dir: -1) },
+                    onIncrease: { step(Self.rowOptions, current: &secondsPerRow, dir: 1) }
+                )
+                zoomControl(
+                    label: "Gain",
+                    value: ampGain == ampGain.rounded() ? "\(Int(ampGain))×" : String(format: "%.1f×", ampGain),
+                    canDecrease: canStep(Self.gainOptions, current: ampGain, dir: -1),
+                    canIncrease: canStep(Self.gainOptions, current: ampGain, dir: 1),
+                    onDecrease: { step(Self.gainOptions, current: &ampGain, dir: -1) },
+                    onIncrease: { step(Self.gainOptions, current: &ampGain, dir: 1) }
+                )
+            }
         }
+    }
+
+    private var detailsBar: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recording.startedAt.formatted(date: .abbreviated, time: .standard))
+                    .font(.caption)
+                Text(timeLabel(durationSeconds))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let device = recording.deviceId {
+                Text(device).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Paper scroller
+
+    private var paperScroller: some View {
+        let rowSamples = secondsPerRow * Int(sampleRate)
+        let totalRows = max(1, samples.count / rowSamples)
+        let scale = computeScale()
+
+        return ScrollView {
+            LazyVStack(spacing: 2) {
+                ForEach(0..<totalRows, id: \.self) { rowIndex in
+                    let offset = rowIndex * rowSamples
+                    let count = min(rowSamples, samples.count - offset)
+                    let seconds = Double(offset) / sampleRate
+                    PaperECGRow(
+                        samples: samples,
+                        startIndex: offset,
+                        sampleCount: count,
+                        gaps: [],
+                        sampleRate: sampleRate,
+                        secondsPerRow: Double(secondsPerRow),
+                        ampGain: ampGain,
+                        valueMid: scale.mid,
+                        valueHalfSpan: scale.halfSpan,
+                        startLabel: timeLabel(seconds)
+                    )
+                    .frame(height: 130)
+                    .padding(.horizontal, 6)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    // MARK: - Scale
+
+    private func computeScale() -> (mid: Double, halfSpan: Double) {
+        guard samples.count > 10 else { return (0, 500) }
+        var sorted = samples
+        sorted.sort()
+        let p05 = Double(sorted[Int(Double(sorted.count) * 0.05)])
+        let p95 = Double(sorted[Int(Double(sorted.count) * 0.95)])
+        let mid = (p05 + p95) / 2.0
+        let span = max(p95 - p05, 400.0)
+        return (mid, span / 2.0 * 1.2)
+    }
+
+    // MARK: - Zoom controls
+
+    private func zoomControl(label: String,
+                             value: String,
+                             canDecrease: Bool,
+                             canIncrease: Bool,
+                             onDecrease: @escaping () -> Void,
+                             onIncrease: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Button(action: onDecrease) {
+                Image(systemName: "minus").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canDecrease)
+
+            Text(value)
+                .font(.caption.monospaced())
+                .frame(minWidth: 48)
+
+            Button(action: onIncrease) {
+                Image(systemName: "plus").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canIncrease)
+        }
+    }
+
+    private func canStep<T: Equatable>(_ options: [T], current: T, dir: Int) -> Bool {
+        guard let i = options.firstIndex(of: current) else { return true }
+        let j = i + dir
+        return j >= 0 && j < options.count
+    }
+
+    private func step<T: Equatable>(_ options: [T], current: inout T, dir: Int) {
+        guard let i = options.firstIndex(of: current) else { return }
+        let j = i + dir
+        guard j >= 0, j < options.count else { return }
+        current = options[j]
     }
 
     private func timeLabel(_ s: Double) -> String {

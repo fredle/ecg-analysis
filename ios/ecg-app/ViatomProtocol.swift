@@ -68,13 +68,15 @@ struct ECGPacket {
     let samples: [Int16]
 
     init?(payload: [UInt8]) {
-        guard payload.count >= 278 else { return nil }
+        guard payload.count >= 24 else { return nil }
         self.batteryPct = payload[0]
         self.batteryState = payload[1]
         self.recordTime = payload[10]
+        let sampleBytes = payload.count - 22
+        let nSamples = sampleBytes / 2
         var s = [Int16]()
-        s.reserveCapacity(128)
-        for i in 0..<128 {
+        s.reserveCapacity(nSamples)
+        for i in 0..<nSamples {
             let lo = UInt16(payload[22 + i * 2])
             let hi = UInt16(payload[22 + i * 2 + 1])
             s.append(Int16(bitPattern: lo | (hi << 8)))
