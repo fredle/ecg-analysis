@@ -1292,6 +1292,15 @@ def api_inference_status(session_id):
         return jsonify({"error": "Session not found"}), 404
 
     entry = _get_inference_status(session_id)
+
+    # Fallback: if no status entry exists but report.json is present,
+    # inference completed via the SSE stream or before status tracking.
+    if entry is None or entry.get("status") == "pending":
+        report_path = os.path.join(session_dir, "report.json")
+        if os.path.isfile(report_path):
+            _set_inference_status(session_id, "done")
+            return jsonify({"session_id": session_id, "status": "done"}), 200
+
     if entry is None:
         return jsonify({"session_id": session_id, "status": "pending"}), 200
 

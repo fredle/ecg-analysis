@@ -107,9 +107,11 @@ struct LibraryView: View {
                         }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if rec.uploadState == .failed || rec.uploadState == .pending {
-                            Button("Upload now") { uploadQueue.retry(rec) }
-                                .tint(.orange)
+                        if rec.source == .usbImport && rec.uploadState != .uploading && rec.uploadState != .uploaded {
+                            Button(rec.uploadState == .pending ? "Upload now" : "Re-upload") {
+                                uploadQueue.retry(rec)
+                            }
+                            .tint(.orange)
                         }
                     }
                 }
