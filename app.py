@@ -1050,12 +1050,22 @@ def reprocess_page():
         [f for f in os.listdir(RAW_DIR) if is_valid_r_filename(f)],
         reverse=True,
     )
+
+    # Determine which files have already been analysed
+    analysed_files: set[str] = set()
+    if os.path.isfile(HOURLY_PARQUET_PATH):
+        try:
+            hr_df = pd.read_parquet(HOURLY_PARQUET_PATH, columns=["recording_file"])
+            analysed_files = set(hr_df["recording_file"].unique())
+        except Exception:
+            pass
+
     file_info = []
     for fname in raw_files:
         m = re.search(r"R(\d{14})$", fname)
         ts = datetime.strptime(m.group(1), "%Y%m%d%H%M%S") if m else None
         size_kb = os.path.getsize(os.path.join(RAW_DIR, fname)) // 1024
-        file_info.append({"name": fname, "ts": ts, "size_kb": size_kb})
+        file_info.append({"name": fname, "ts": ts, "size_kb": size_kb, "analysed": fname in analysed_files})
 
     per_page = 20
     total_files = len(file_info)
@@ -1068,10 +1078,13 @@ def reprocess_page():
     start = (page - 1) * per_page
     page_files = file_info[start:start + per_page]
 
+    analysed_count = sum(1 for f in file_info if f["analysed"])
+
     return render_template(
         "reprocess.html",
         files=page_files,
         total_files=total_files,
+        analysed_count=analysed_count,
         page=page,
         total_pages=total_pages,
         per_page=per_page,

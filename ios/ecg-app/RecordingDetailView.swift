@@ -2,7 +2,6 @@ import SwiftUI
 
 struct RecordingDetailView: View {
     let recording: Recording
-    @Environment(UploadQueue.self) private var uploadQueue
 
     @State private var samples: [Int16] = []
     @State private var secondsPerRow: Int = 10
@@ -37,17 +36,6 @@ struct RecordingDetailView: View {
             }
         }
         .navigationTitle(recording.filename)
-        .toolbar {
-            if recording.source == .usbImport {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        uploadQueue.retry(recording)
-                    } label: {
-                        Label("Re-upload", systemImage: "arrow.clockwise")
-                    }
-                }
-            }
-        }
         .task(id: recording.id) {
             samples = recording.loadSamples()
         }
@@ -92,6 +80,9 @@ struct RecordingDetailView: View {
             Spacer()
             if let device = recording.deviceId {
                 Text(device).font(.caption2).foregroundStyle(.secondary)
+            }
+            if recording.source == .usbImport {
+                UploadStatusLabel(state: recording.uploadState)
             }
         }
     }
@@ -190,5 +181,54 @@ struct RecordingDetailView: View {
         let sec = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, sec) }
         return String(format: "%d:%02d", m, sec)
+    }
+}
+
+struct UploadStatusLabel: View {
+    let state: UploadState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text(label)
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(color)
+    }
+
+    private var icon: String {
+        switch state {
+        case .notApplicable: return "iphone"
+        case .pending:       return "clock"
+        case .uploading:     return "arrow.up.circle"
+        case .uploaded:      return "brain"
+        case .analyzed:      return "checkmark.seal.fill"
+        case .skipped:       return "equal.circle"
+        case .failed:        return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var label: String {
+        switch state {
+        case .notApplicable: return "Local"
+        case .pending:       return "Not uploaded"
+        case .uploading:     return "Uploading…"
+        case .uploaded:      return "Analysing…"
+        case .analyzed:      return "Analysed"
+        case .skipped:       return "Duplicate"
+        case .failed:        return "Upload failed"
+        }
+    }
+
+    private var color: Color {
+        switch state {
+        case .notApplicable: return .secondary
+        case .pending:       return .secondary
+        case .uploading:     return .blue
+        case .uploaded:      return .purple
+        case .analyzed:      return .green
+        case .skipped:       return .gray
+        case .failed:        return .orange
+        }
     }
 }

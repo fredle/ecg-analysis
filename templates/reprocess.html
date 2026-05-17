@@ -19,6 +19,9 @@
   .file-name { font-family: 'Cascadia Code','Fira Code',monospace; font-size: 13px; flex: 1; color: var(--accent); }
   .file-time { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
   .file-size { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  .file-status { font-size: 11px; font-weight: 500; white-space: nowrap; padding: 2px 7px; border-radius: 4px; }
+  .file-status.analysed { color: #34c759; background: rgba(52,199,89,0.12); }
+  .file-status.not-analysed { color: var(--text-dim); background: rgba(128,128,128,0.1); }
   .empty-state { text-align: center; padding: 60px 24px; color: var(--text-dim); font-size: 15px; }
   .submit-bar { position: sticky; bottom: 0; background: var(--bg); padding: 16px 0; border-top: 1px solid var(--border); margin-top: 24px; display: flex; align-items: center; gap: 16px; }
   .btn-submit { padding: 11px 32px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
@@ -39,6 +42,7 @@
   <h1>&#x21BA; Reprocess Raw Files</h1>
   <div class="subtitle">
     {{ total_files }} file{{ 's' if total_files != 1 else '' }} in raw archive
+    &middot; {{ analysed_count }} analysed, {{ total_files - analysed_count }} not analysed
     {% if total_pages > 1 %}&middot; page {{ page }} of {{ total_pages }} ({{ files|length }} shown){% endif %}
     &middot; newest first
   </div>
@@ -74,6 +78,7 @@
     {{ pagination() }}
     <div class="toolbar">
       <button type="button" class="toolbar-btn" onclick="selectAll()">Select all on page</button>
+      <button type="button" class="toolbar-btn" onclick="selectNotAnalysed()">Not analysed</button>
       <button type="button" class="toolbar-btn" onclick="selectNone()">Clear</button>
       <button type="button" class="toolbar-btn" onclick="selectToday()">Today</button>
       <button type="button" class="toolbar-btn" onclick="selectLast7()">Last 7 days</button>
@@ -95,10 +100,16 @@
       <label class="file-row">
         <input type="checkbox" name="files" value="{{ f.name }}"
                data-day="{{ day }}" data-ts="{{ f.ts.timestamp() if f.ts else 0 }}"
+               data-analysed="{{ 'true' if f.analysed else 'false' }}"
                onchange="updateCount()">
         <span class="file-name">{{ f.name }}</span>
         <span class="file-time">{{ f.ts.strftime('%H:%M:%S') if f.ts else '' }}</span>
         <span class="file-size">{{ f.size_kb }} KB</span>
+        {% if f.analysed %}
+          <span class="file-status analysed">Analysed</span>
+        {% else %}
+          <span class="file-status not-analysed">Not analysed</span>
+        {% endif %}
       </label>
     {% endfor %}
     </div>
@@ -128,6 +139,7 @@ function updateCount() {
   Object.entries(byDay).forEach(([day, counts]) => { var el = document.getElementById('daysel-'+day); if (el) el.textContent = counts.checked > 0 ? counts.checked+' / '+counts.total+' selected' : ''; });
 }
 function selectAll() { allCheckboxes().forEach(c => c.checked = true); updateCount(); }
+function selectNotAnalysed() { allCheckboxes().forEach(c => { c.checked = c.dataset.analysed === 'false'; }); updateCount(); }
 function selectNone() { allCheckboxes().forEach(c => c.checked = false); updateCount(); }
 function selectToday() { var midnight = new Date(); midnight.setHours(0,0,0,0); allCheckboxes().forEach(c => { c.checked = parseFloat(c.dataset.ts)*1000 >= midnight.getTime(); }); updateCount(); }
 function selectLast7() { var cutoff = Date.now()-7*86400000; allCheckboxes().forEach(c => { c.checked = parseFloat(c.dataset.ts)*1000 >= cutoff; }); updateCount(); }

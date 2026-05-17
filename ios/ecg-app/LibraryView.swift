@@ -126,7 +126,7 @@ struct LibraryView: View {
                         Button(role: .destructive) { delete(rec) } label: {
                             Label("Delete", systemImage: "trash")
                         }
-                        if rec.source == .usbImport && rec.uploadState != .uploading && rec.uploadState != .uploaded {
+                        if rec.source == .usbImport && rec.uploadState != .uploading {
                             Button { uploadQueue.retry(rec) } label: {
                                 Label(rec.uploadState == .pending ? "Upload" : "Re-upload",
                                       systemImage: "arrow.clockwise")
@@ -286,8 +286,8 @@ private struct UploadBadge: View {
     private var icon: String {
         switch state {
         case .notApplicable: return "iphone"
-        case .pending:       return "arrow.up.circle"
-        case .uploading:     return "arrow.up.circle.dotted"
+        case .pending:       return "clock"
+        case .uploading:     return "arrow.up.circle"
         case .uploaded:      return "brain"
         case .analyzed:      return "checkmark.seal.fill"
         case .skipped:       return "equal.circle"
@@ -297,11 +297,11 @@ private struct UploadBadge: View {
 
     private var label: String {
         switch state {
-        case .notApplicable: return source == .liveLocal ? "Local only" : "—"
-        case .pending:       return "Queued"
-        case .uploading:     return "Uploading"
-        case .uploaded:      return "Analysing"
-        case .analyzed:      return "Done"
+        case .notApplicable: return source == .liveLocal ? "Local" : "—"
+        case .pending:       return "Not uploaded"
+        case .uploading:     return "Uploading…"
+        case .uploaded:      return "Analysing…"
+        case .analyzed:      return "Analysed"
         case .skipped:       return "Skipped (dup)"
         case .failed:        return "Failed"
         }
@@ -310,7 +310,7 @@ private struct UploadBadge: View {
     private var color: Color {
         switch state {
         case .notApplicable: return .secondary
-        case .pending:       return .blue
+        case .pending:       return .secondary
         case .uploading:     return .blue
         case .uploaded:      return .purple
         case .analyzed:      return .green
@@ -326,27 +326,29 @@ private struct UploadSummary: View {
     var body: some View {
         let counts = tally()
         HStack(spacing: 6) {
-            if counts.analyzed > 0 { Chip(text: "\(counts.analyzed)", systemImage: "checkmark.seal.fill", color: .green) }
-            if counts.inFlight > 0 { Chip(text: "\(counts.inFlight)", systemImage: "arrow.up.circle", color: .blue) }
-            if counts.skipped  > 0 { Chip(text: "\(counts.skipped)",  systemImage: "equal.circle", color: .gray) }
-            if counts.failed   > 0 { Chip(text: "\(counts.failed)",   systemImage: "exclamationmark.triangle.fill", color: .orange) }
+            if counts.analyzed > 0  { Chip(text: "\(counts.analyzed)",  systemImage: "checkmark.seal.fill", color: .green) }
+            if counts.analysing > 0 { Chip(text: "\(counts.analysing)", systemImage: "brain", color: .purple) }
+            if counts.uploading > 0 { Chip(text: "\(counts.uploading)", systemImage: "arrow.up.circle", color: .blue) }
+            if counts.pending > 0   { Chip(text: "\(counts.pending)",   systemImage: "clock", color: .secondary) }
+            if counts.failed > 0    { Chip(text: "\(counts.failed)",    systemImage: "exclamationmark.triangle.fill", color: .orange) }
         }
         .font(.caption2.weight(.semibold))
         .textCase(nil)
     }
 
-    private func tally() -> (analyzed: Int, inFlight: Int, skipped: Int, failed: Int) {
-        var a = 0, i = 0, s = 0, f = 0
-        for r in recordings {
+    private func tally() -> (analyzed: Int, analysing: Int, uploading: Int, pending: Int, failed: Int) {
+        var analyzed = 0, analysing = 0, uploading = 0, pending = 0, failed = 0
+        for r in recordings where r.source == .usbImport {
             switch r.uploadState {
-            case .analyzed: a += 1
-            case .pending, .uploading, .uploaded: i += 1
-            case .skipped: s += 1
-            case .failed: f += 1
-            case .notApplicable: break
+            case .analyzed, .skipped: analyzed += 1
+            case .uploaded:           analysing += 1
+            case .uploading:          uploading += 1
+            case .pending:            pending += 1
+            case .failed:             failed += 1
+            case .notApplicable:      break
             }
         }
-        return (a, i, s, f)
+        return (analyzed, analysing, uploading, pending, failed)
     }
 
     private struct Chip: View {

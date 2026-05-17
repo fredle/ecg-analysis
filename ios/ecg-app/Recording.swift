@@ -57,8 +57,17 @@ final class Recording {
 
     var uploadState: UploadState {
         get {
-            if let s = UploadState(rawValue: uploadStateRaw) { return s }
-            return source == .usbImport ? .pending : .notApplicable
+            if let s = UploadState(rawValue: uploadStateRaw) {
+                // Correct stale "pending" state if we have proof of upload
+                if s == .pending, remoteSessionId != nil {
+                    return .analyzed
+                }
+                return s
+            }
+            if source == .usbImport {
+                return remoteSessionId != nil ? .analyzed : .pending
+            }
+            return .notApplicable
         }
         set { uploadStateRaw = newValue.rawValue }
     }

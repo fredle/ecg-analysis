@@ -188,6 +188,10 @@ final class UploadQueue {
                         logger.info("Inference done for \(rec.filename)")
                         rec.uploadStateRaw = UploadState.analyzed.rawValue
                         try? context.save()
+                    case "pending":
+                        // File uploaded but inference never started — trigger it
+                        logger.info("Triggering inference for \(rec.filename)")
+                        try? await APIClient.shared.startInference(sessionId: sessionId)
                     case "error":
                         logger.error("Inference error for \(rec.filename): \(status.error ?? "unknown")")
                         rec.uploadStateRaw = UploadState.failed.rawValue
