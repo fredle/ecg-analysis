@@ -31,7 +31,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "ecg-bigeminy-analysis-key")
 
-UPLOAD_FOLDER   = os.path.join(os.path.dirname(__file__), "uploads")
+UPLOAD_FOLDER   = os.path.join(os.path.dirname(__file__), "data", "uploads")
 DATA_DIR        = os.path.join(os.path.dirname(__file__), "data")
 RAW_DIR         = os.path.join(DATA_DIR, "raw")
 ECG_PARQUET_DIR = os.path.join(DATA_DIR, "ecg_raw")
