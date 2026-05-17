@@ -652,7 +652,11 @@ def save_episodes_to_parquet(report):
 
     # Load existing parquet (if any) and remove rows in the overlapping ranges
     if os.path.isfile(PARQUET_PATH):
-        existing = pd.read_parquet(PARQUET_PATH)
+        try:
+            existing = pd.read_parquet(PARQUET_PATH)
+        except Exception:
+            log.warning("Corrupt parquet %s — overwriting", PARQUET_PATH)
+            existing = pd.DataFrame()
         if not existing.empty and "start_time" in existing.columns:
             mask = pd.Series(True, index=existing.index)
             for r_start, r_end in time_ranges:
@@ -668,7 +672,9 @@ def save_episodes_to_parquet(report):
     if not combined.empty:
         combined = combined.sort_values("start_time").reset_index(drop=True)
 
-    combined.to_parquet(PARQUET_PATH, index=False)
+    tmp_path = PARQUET_PATH + ".tmp"
+    combined.to_parquet(tmp_path, index=False)
+    os.replace(tmp_path, PARQUET_PATH)
     log.info("Parquet updated: %d total episodes in %s", len(combined), PARQUET_PATH)
     return combined
 
@@ -706,7 +712,11 @@ def save_hourly_to_parquet(report):
         return
 
     if os.path.isfile(HOURLY_PARQUET_PATH):
-        existing = pd.read_parquet(HOURLY_PARQUET_PATH)
+        try:
+            existing = pd.read_parquet(HOURLY_PARQUET_PATH)
+        except Exception:
+            log.warning("Corrupt parquet %s — overwriting", HOURLY_PARQUET_PATH)
+            existing = pd.DataFrame()
         if not existing.empty and "hour_start" in existing.columns:
             mask = pd.Series(True, index=existing.index)
             for r_start, r_end in time_ranges:
@@ -720,7 +730,9 @@ def save_hourly_to_parquet(report):
         combined = new_df
 
     combined = combined.sort_values("hour_start").reset_index(drop=True)
-    combined.to_parquet(HOURLY_PARQUET_PATH, index=False)
+    tmp_path = HOURLY_PARQUET_PATH + ".tmp"
+    combined.to_parquet(tmp_path, index=False)
+    os.replace(tmp_path, HOURLY_PARQUET_PATH)
     log.info("Hourly HR parquet updated: %d rows in %s", len(combined), HOURLY_PARQUET_PATH)
 
 
@@ -759,19 +771,25 @@ def save_raw_ecg_to_parquet(recording_file, samples, start_time):
         })
 
         if os.path.isfile(out_path):
-            existing = pq.read_table(out_path)
-            existing = existing.filter(
-                pc.not_equal(existing.column("recording_file"), recording_file)
-            )
-            combined = pa.concat_tables([existing, new_table])
+            try:
+                existing = pq.read_table(out_path)
+                existing = existing.filter(
+                    pc.not_equal(existing.column("recording_file"), recording_file)
+                )
+                combined = pa.concat_tables([existing, new_table])
+            except Exception:
+                log.warning("Corrupt parquet %s — overwriting", out_path)
+                combined = new_table
         else:
             combined = new_table
 
         combined = combined.sort_by([("recording_file", "ascending"),
                                      ("chunk_start", "ascending")])
-        pq.write_table(combined, out_path,
+        tmp_path = out_path + ".tmp"
+        pq.write_table(combined, tmp_path,
                        compression="zstd",
                        row_group_size=RAW_CHUNK_ROW_GROUP)
+        os.replace(tmp_path, out_path)
         log.info("Raw ECG parquet saved: %s (%d chunks)", out_path, len(chunks))
 
 
