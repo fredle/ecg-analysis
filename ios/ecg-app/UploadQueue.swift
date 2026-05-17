@@ -14,9 +14,10 @@ final class UploadQueue {
 
     var queueDepth: Int = 0
     var isUploading: Bool = false
+    var inferenceCount: Int = 0
     var lastError: String?
 
-    private static let pollInterval: UInt64 = 5_000_000_000 // 5 seconds
+    private static let pollInterval: UInt64 = 10_000_000_000 // 10 seconds
 
     func attach(context: ModelContext) {
         self.modelContext = context
@@ -50,9 +51,7 @@ final class UploadQueue {
         kick()
     }
 
-    /// On launch, recover recordings stuck in transient states. For any that
-    /// have a remoteSessionId, check with the server first — inference may
-    /// have already completed.
+    /// On launch, recover recordings stuck in transient states.
     private func recoverStale(in context: ModelContext) async {
         let uploadingRaw = UploadState.uploading.rawValue
         let failedRaw = UploadState.failed.rawValue
@@ -92,7 +91,6 @@ final class UploadQueue {
                     logger.warning("Failed to reach server for \(rec.filename)")
                 }
             }
-            // No session or server doesn't know about it — re-queue
             logger.info("Re-queuing \(rec.filename) for upload")
             rec.uploadStateRaw = UploadState.pending.rawValue
             rec.uploadError = nil
@@ -141,15 +139,18 @@ final class UploadQueue {
                 try? context.save()
                 return
 
-            case .accepted(let sessionId):
-                logger.info("Upload accepted for \(rec.filename), session \(sessionId)")
+            case .done(let sessionId):
+                logger.info("Upload + inference done for \(rec.filename), session \(sessionId)")
                 rec.remoteSessionId = sessionId
-                rec.uploadStateRaw = UploadState.uploaded.rawValue
+                rec.uploadStateRaw = UploadState.analyzed.rawValue
                 try? context.save()
 
-                // Fire inference start — if it fails or times out, the poll
-                // loop will trigger it via the status endpoint instead.
-                _ = try? await APIClient.shared.startInference(sessionId: sessionId)
+            case .error(let sessionId, let message):
+                logger.error("Inference failed for \(rec.filename): \(message)")
+                rec.remoteSessionId = sessionId
+                rec.uploadStateRaw = UploadState.failed.rawValue
+                rec.uploadError = message
+                try? context.save()
             }
         } catch {
             logger.error("Upload failed for \(rec.filename): \(error.localizedDescription)")
@@ -171,6 +172,7 @@ final class UploadQueue {
                 sortBy: [SortDescriptor(\Recording.startedAt)]
             )
             let uploaded = (try? context.fetch(desc)) ?? []
+            inferenceCount = uploaded.count
 
             if uploaded.isEmpty {
                 try? await Task.sleep(nanoseconds: Self.pollInterval)
@@ -194,11 +196,21 @@ final class UploadQueue {
                     default:
                         break
                     }
+                } catch let e as APIError {
+                    // 404 = session gone from server, need to re-upload
+                    if case .http(404, _) = e {
+                        logger.warning("Session gone for \(rec.filename), re-queuing")
+                        rec.remoteSessionId = nil
+                        rec.uploadStateRaw = UploadState.pending.rawValue
+                        try? context.save()
+                    }
+                    // Other errors (network, timeout) — retry next cycle
                 } catch {
-                    // Network error — retry next cycle
+                    // URLError etc — retry next cycle
                 }
             }
 
+            inferenceCount = uploaded.filter { $0.uploadStateRaw == UploadState.uploaded.rawValue }.count
             try? await Task.sleep(nanoseconds: Self.pollInterval)
         }
     }

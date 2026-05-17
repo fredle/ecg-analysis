@@ -18,7 +18,7 @@ struct LibraryView: View {
         NavigationStack {
             List {
                 usbSection
-                if uploadQueue.isUploading || uploadQueue.queueDepth > 0 || uploadQueue.lastError != nil {
+                if uploadQueue.isUploading || uploadQueue.queueDepth > 0 || uploadQueue.inferenceCount > 0 || uploadQueue.lastError != nil {
                     uploadsSection
                 }
                 recordingsSection
@@ -80,10 +80,26 @@ struct LibraryView: View {
     // MARK: - Uploads
 
     private var uploadsSection: some View {
-        Section("Uploads") {
-            LabeledContent("Queue depth", value: "\(uploadQueue.queueDepth)")
-            if uploadQueue.isUploading {
-                HStack { ProgressView(); Text("Uploading…").foregroundStyle(.secondary) }
+        Section("Activity") {
+            if uploadQueue.isUploading || uploadQueue.queueDepth > 0 {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Uploading…")
+                    Spacer()
+                    Text("\(uploadQueue.queueDepth) in queue")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+            }
+            if uploadQueue.inferenceCount > 0 {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Analysing \(uploadQueue.inferenceCount) recording\(uploadQueue.inferenceCount == 1 ? "" : "s")…")
+                    Spacer()
+                    Text("~\(uploadQueue.inferenceCount * 2)–\(uploadQueue.inferenceCount * 3) min")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
             }
             if let err = uploadQueue.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
@@ -107,15 +123,18 @@ struct LibraryView: View {
                         }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) { delete(rec) } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                         if rec.source == .usbImport && rec.uploadState != .uploading && rec.uploadState != .uploaded {
-                            Button(rec.uploadState == .pending ? "Upload now" : "Re-upload") {
-                                uploadQueue.retry(rec)
+                            Button { uploadQueue.retry(rec) } label: {
+                                Label(rec.uploadState == .pending ? "Upload" : "Re-upload",
+                                      systemImage: "arrow.clockwise")
                             }
                             .tint(.orange)
                         }
                     }
                 }
-                .onDelete(perform: delete)
             }
         } header: {
             HStack {
@@ -189,13 +208,16 @@ struct LibraryView: View {
         }
     }
 
+    private func delete(_ rec: Recording) {
+        try? FileManager.default.removeItem(at: rec.fileURL)
+        modelContext.delete(rec)
+        try? modelContext.save()
+    }
+
     private func delete(at offsets: IndexSet) {
         for idx in offsets {
-            let rec = recordings[idx]
-            try? FileManager.default.removeItem(at: rec.fileURL)
-            modelContext.delete(rec)
+            delete(recordings[idx])
         }
-        try? modelContext.save()
     }
 }
 

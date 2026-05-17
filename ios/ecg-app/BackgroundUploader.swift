@@ -66,7 +66,10 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
         }
 
         if let decoded = try? JSONDecoder().decode(APIClient.UploadResponse.self, from: data) {
-            return .accepted(sessionId: decoded.session_id)
+            if decoded.status == "error" {
+                return .error(sessionId: decoded.session_id, message: decoded.error ?? "Inference failed")
+            }
+            return .done(sessionId: decoded.session_id)
         }
         return .skipped
     }

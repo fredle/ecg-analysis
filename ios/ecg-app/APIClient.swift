@@ -94,14 +94,18 @@ struct APIClient: Sendable {
         let session_id: String
         let files: [String]
         let count: Int
+        let status: String?  // "done" or "error"
+        let error: String?
     }
 
     enum UploadResult {
-        case accepted(sessionId: String)
+        case done(sessionId: String)
+        case error(sessionId: String, message: String)
         case skipped
     }
 
-    /// POST /api/upload — JSON-only endpoint. Returns session info immediately.
+    /// POST /api/upload — uploads file and runs inference synchronously.
+    /// May take 2-3 minutes per file for inference.
     func uploadRFile(fileURL: URL, filename: String) async throws -> UploadResult {
         let uploadURL = baseURL.appendingPathComponent("api/upload")
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -127,9 +131,11 @@ struct APIClient: Sendable {
 
             try check(response: response, data: data)
 
-            // Server returns session_id when files were saved, or just skipped[] for dupes
             if let decoded = try? JSONDecoder().decode(UploadResponse.self, from: data) {
-                return .accepted(sessionId: decoded.session_id)
+                if decoded.status == "error" {
+                    return .error(sessionId: decoded.session_id, message: decoded.error ?? "Inference failed")
+                }
+                return .done(sessionId: decoded.session_id)
             }
             return .skipped
         } catch let e as APIError {
