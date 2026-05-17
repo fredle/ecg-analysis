@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import os
 
 @MainActor
 @Observable
@@ -7,6 +8,9 @@ final class UploadQueue {
     private weak var modelContext: ModelContext?
     private var uploadTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var hasRecovered = false
+
+    private let logger = Logger(subsystem: "com.ecg-app", category: "UploadQueue")
 
     var queueDepth: Int = 0
     var isUploading: Bool = false
@@ -19,11 +23,16 @@ final class UploadQueue {
     }
 
     func kick() {
-        guard modelContext != nil else { return }
+        guard let context = modelContext else { return }
         if uploadTask == nil {
             uploadTask = Task { [weak self] in
-                await self?.runUploads()
-                self?.uploadTask = nil
+                guard let self else { return }
+                if !self.hasRecovered {
+                    await self.recoverStale(in: context)
+                    self.hasRecovered = true
+                }
+                await self.runUploads()
+                self.uploadTask = nil
             }
         }
         if pollTask == nil {
@@ -39,6 +48,56 @@ final class UploadQueue {
         rec.uploadError = nil
         try? modelContext?.save()
         kick()
+    }
+
+    /// On launch, recover recordings stuck in transient states. For any that
+    /// have a remoteSessionId, check with the server first — inference may
+    /// have already completed.
+    private func recoverStale(in context: ModelContext) async {
+        let uploadingRaw = UploadState.uploading.rawValue
+        let failedRaw = UploadState.failed.rawValue
+        let desc = FetchDescriptor<Recording>(
+            predicate: #Predicate<Recording> {
+                $0.uploadStateRaw == uploadingRaw || $0.uploadStateRaw == failedRaw
+            }
+        )
+        let stale = (try? context.fetch(desc)) ?? []
+        guard !stale.isEmpty else {
+            logger.info("No stale recordings to recover")
+            return
+        }
+
+        logger.info("Recovering \(stale.count) stale recordings")
+
+        for rec in stale {
+            if let sessionId = rec.remoteSessionId {
+                logger.info("Checking server for \(rec.filename) (session \(sessionId))")
+                if let status = try? await APIClient.shared.inferenceStatus(sessionId: sessionId) {
+                    logger.info("Server says \(rec.filename) is \(status.status)")
+                    switch status.status {
+                    case "done":
+                        rec.uploadStateRaw = UploadState.analyzed.rawValue
+                        rec.uploadError = nil
+                        try? context.save()
+                        continue
+                    case "processing":
+                        rec.uploadStateRaw = UploadState.uploaded.rawValue
+                        rec.uploadError = nil
+                        try? context.save()
+                        continue
+                    default:
+                        break
+                    }
+                } else {
+                    logger.warning("Failed to reach server for \(rec.filename)")
+                }
+            }
+            // No session or server doesn't know about it — re-queue
+            logger.info("Re-queuing \(rec.filename) for upload")
+            rec.uploadStateRaw = UploadState.pending.rawValue
+            rec.uploadError = nil
+        }
+        try? context.save()
     }
 
     // MARK: - Phase 1: Upload files
@@ -58,6 +117,7 @@ final class UploadQueue {
                 return
             }
             isUploading = true
+            logger.info("Uploading \(rec.filename)")
             await uploadOne(rec, in: context)
         }
         isUploading = false
@@ -76,26 +136,23 @@ final class UploadQueue {
 
             switch result {
             case .skipped:
+                logger.info("Server skipped \(rec.filename)")
                 rec.uploadStateRaw = UploadState.skipped.rawValue
                 try? context.save()
                 return
 
             case .accepted(let sessionId):
+                logger.info("Upload accepted for \(rec.filename), session \(sessionId)")
                 rec.remoteSessionId = sessionId
                 rec.uploadStateRaw = UploadState.uploaded.rawValue
                 try? context.save()
 
-                // Kick off inference on the server (fire and forget from upload perspective)
-                do {
-                    try await APIClient.shared.startInference(sessionId: sessionId)
-                } catch {
-                    // Inference start failed — mark as failed so user can retry
-                    rec.uploadStateRaw = UploadState.failed.rawValue
-                    rec.uploadError = "Inference start failed: \(error.localizedDescription)"
-                    try? context.save()
-                }
+                // Fire inference start — if it fails or times out, the poll
+                // loop will trigger it via the status endpoint instead.
+                _ = try? await APIClient.shared.startInference(sessionId: sessionId)
             }
         } catch {
+            logger.error("Upload failed for \(rec.filename): \(error.localizedDescription)")
             rec.uploadStateRaw = UploadState.failed.rawValue
             rec.uploadError = error.localizedDescription
             lastError = error.localizedDescription
@@ -116,7 +173,6 @@ final class UploadQueue {
             let uploaded = (try? context.fetch(desc)) ?? []
 
             if uploaded.isEmpty {
-                // Nothing to poll — wait and check again
                 try? await Task.sleep(nanoseconds: Self.pollInterval)
                 continue
             }
@@ -127,17 +183,19 @@ final class UploadQueue {
                     let status = try await APIClient.shared.inferenceStatus(sessionId: sessionId)
                     switch status.status {
                     case "done":
+                        logger.info("Inference done for \(rec.filename)")
                         rec.uploadStateRaw = UploadState.analyzed.rawValue
                         try? context.save()
                     case "error":
+                        logger.error("Inference error for \(rec.filename): \(status.error ?? "unknown")")
                         rec.uploadStateRaw = UploadState.failed.rawValue
                         rec.uploadError = status.error ?? "Inference failed"
                         try? context.save()
                     default:
-                        break // still processing, check again next cycle
+                        break
                     }
                 } catch {
-                    // Network error polling — don't mark as failed, just retry next cycle
+                    // Network error — retry next cycle
                 }
             }
 

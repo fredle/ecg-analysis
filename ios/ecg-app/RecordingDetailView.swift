@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RecordingDetailView: View {
     let recording: Recording
+    @Environment(UploadQueue.self) private var uploadQueue
 
     @State private var samples: [Int16] = []
     @State private var secondsPerRow: Int = 10
@@ -36,6 +37,17 @@ struct RecordingDetailView: View {
             }
         }
         .navigationTitle(recording.filename)
+        .toolbar {
+            if recording.source == .usbImport {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        uploadQueue.retry(recording)
+                    } label: {
+                        Label("Re-upload", systemImage: "arrow.clockwise")
+                    }
+                }
+            }
+        }
         .task(id: recording.id) {
             samples = recording.loadSamples()
         }

@@ -1241,10 +1241,14 @@ def api_upload():
 
 @app.route("/api/inference/<session_id>", methods=["POST"])
 def api_inference_start(session_id):
-    """Kick off inference for an uploaded session. Returns immediately."""
+    """Kick off inference for an uploaded session. Runs synchronously."""
     session_dir = os.path.join(UPLOAD_FOLDER, session_id)
     if not os.path.isdir(session_dir):
         return jsonify({"error": "Session not found"}), 404
+
+    report_path = os.path.join(session_dir, "report.json")
+    if os.path.isfile(report_path):
+        return jsonify({"session_id": session_id, "status": "done"}), 200
 
     r_files = sorted([
         os.path.join(session_dir, f)
@@ -1254,60 +1258,50 @@ def api_inference_start(session_id):
     if not r_files:
         return jsonify({"error": "No R-files found"}), 400
 
-    existing = _get_inference_status(session_id)
-    if existing and existing.get("status") == "processing":
-        return jsonify({"session_id": session_id, "status": "processing"}), 200
-
-    _set_inference_status(session_id, "processing")
-
-    def run():
-        try:
-            report = analyse_files(r_files)
-            save_episodes_to_parquet(report)
-            save_hourly_to_parquet(report)
-            report_path = os.path.join(session_dir, "report.json")
-            with open(report_path, "w") as f:
-                json.dump(report, f)
-            _set_inference_status(session_id, "done")
-            log.info("Inference complete for session %s", session_id)
-        except Exception as e:
-            log.exception("Inference failed for session %s", session_id)
-            _set_inference_status(session_id, "error", str(e))
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-
-    return jsonify({
-        "session_id": session_id,
-        "status": "processing",
-        "file_count": len(r_files),
-    }), 202
+    try:
+        report = analyse_files(r_files)
+        save_episodes_to_parquet(report)
+        save_hourly_to_parquet(report)
+        with open(report_path, "w") as f:
+            json.dump(report, f)
+        log.info("Inference complete for session %s", session_id)
+        return jsonify({"session_id": session_id, "status": "done"}), 200
+    except Exception as e:
+        log.exception("Inference failed for session %s", session_id)
+        return jsonify({"session_id": session_id, "status": "error", "error": str(e)}), 200
 
 
 @app.route("/api/inference/<session_id>/status")
 def api_inference_status(session_id):
-    """Poll inference status for a session."""
+    """Poll inference status. Runs inference synchronously if not yet done."""
     session_dir = os.path.join(UPLOAD_FOLDER, session_id)
     if not os.path.isdir(session_dir):
         return jsonify({"error": "Session not found"}), 404
 
-    entry = _get_inference_status(session_id)
+    report_path = os.path.join(session_dir, "report.json")
+    if os.path.isfile(report_path):
+        return jsonify({"session_id": session_id, "status": "done"}), 200
 
-    # Fallback: if no status entry exists but report.json is present,
-    # inference completed via the SSE stream or before status tracking.
-    if entry is None or entry.get("status") == "pending":
-        report_path = os.path.join(session_dir, "report.json")
-        if os.path.isfile(report_path):
-            _set_inference_status(session_id, "done")
-            return jsonify({"session_id": session_id, "status": "done"}), 200
+    # Inference hasn't run yet — run it now synchronously
+    r_files = sorted([
+        os.path.join(session_dir, f)
+        for f in os.listdir(session_dir)
+        if re.search(r"R\d{14}$", f)
+    ])
+    if not r_files:
+        return jsonify({"session_id": session_id, "status": "error", "error": "No R-files found"}), 200
 
-    if entry is None:
-        return jsonify({"session_id": session_id, "status": "pending"}), 200
-
-    resp = {"session_id": session_id, "status": entry["status"]}
-    if "error" in entry:
-        resp["error"] = entry["error"]
-    return jsonify(resp), 200
+    try:
+        report = analyse_files(r_files)
+        save_episodes_to_parquet(report)
+        save_hourly_to_parquet(report)
+        with open(report_path, "w") as f:
+            json.dump(report, f)
+        log.info("Inference complete for session %s (triggered by status poll)", session_id)
+        return jsonify({"session_id": session_id, "status": "done"}), 200
+    except Exception as e:
+        log.exception("Inference failed for session %s", session_id)
+        return jsonify({"session_id": session_id, "status": "error", "error": str(e)}), 200
 
 
 @app.route("/analyse/<session_id>")
