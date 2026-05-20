@@ -88,6 +88,35 @@ struct APIClient: Sendable {
         ])
     }
 
+    // MARK: - File status reconciliation
+
+    struct FileStatusResponse: Decodable {
+        let files: [String: String]  // filename -> "analysed" | "uploaded" | "unknown"
+    }
+
+    /// POST /api/file_status — check which files the server already has.
+    func fileStatus(filenames: [String]) async throws -> [String: String] {
+        let url = baseURL.appendingPathComponent("api/file_status")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(["files": filenames])
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            try check(response: response, data: data)
+            let decoded = try JSONDecoder().decode(FileStatusResponse.self, from: data)
+            return decoded.files
+        } catch let e as APIError {
+            throw e
+        } catch let e as URLError {
+            throw APIError.network(e)
+        } catch let e as DecodingError {
+            throw APIError.decoding(e)
+        }
+    }
+
     // MARK: - Upload (JSON API)
 
     struct UploadResponse: Decodable {

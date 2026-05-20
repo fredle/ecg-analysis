@@ -1301,6 +1301,35 @@ def api_upload():
     return jsonify(resp), 200
 
 
+@app.route("/api/file_status", methods=["POST"])
+def api_file_status():
+    """Given a list of filenames, return which are uploaded and/or analysed."""
+    filenames = request.json.get("files", []) if request.is_json else []
+    if not filenames:
+        return jsonify({"error": "No files provided"}), 400
+
+    registry = _load_upload_registry()
+
+    analysed_files: set[str] = set()
+    if os.path.isfile(HOURLY_PARQUET_PATH):
+        try:
+            hr_df = pd.read_parquet(HOURLY_PARQUET_PATH, columns=["recording_file"])
+            analysed_files = set(hr_df["recording_file"].unique())
+        except Exception:
+            pass
+
+    results = {}
+    for fname in filenames:
+        if fname in analysed_files:
+            results[fname] = "analysed"
+        elif fname in registry:
+            results[fname] = "uploaded"
+        else:
+            results[fname] = "unknown"
+
+    return jsonify({"files": results}), 200
+
+
 @app.route("/api/inference/<session_id>", methods=["POST"])
 def api_inference_start(session_id):
     """Kick off inference for an uploaded session. Runs synchronously."""

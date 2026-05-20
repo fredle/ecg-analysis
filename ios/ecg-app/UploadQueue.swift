@@ -51,49 +51,79 @@ final class UploadQueue {
         kick()
     }
 
-    /// On launch, recover recordings stuck in transient states.
+    /// On launch, recover recordings stuck in transient states and reconcile
+    /// pending recordings against the server (files may already be analysed).
     private func recoverStale(in context: ModelContext) async {
+        // Phase A: check uploading/failed recordings by session ID
         let uploadingRaw = UploadState.uploading.rawValue
         let failedRaw = UploadState.failed.rawValue
-        let desc = FetchDescriptor<Recording>(
+        let staleDesc = FetchDescriptor<Recording>(
             predicate: #Predicate<Recording> {
                 $0.uploadStateRaw == uploadingRaw || $0.uploadStateRaw == failedRaw
             }
         )
-        let stale = (try? context.fetch(desc)) ?? []
-        guard !stale.isEmpty else {
-            logger.info("No stale recordings to recover")
+        let stale = (try? context.fetch(staleDesc)) ?? []
+        if !stale.isEmpty {
+            logger.info("Recovering \(stale.count) stale recordings")
+            for rec in stale {
+                if let sessionId = rec.remoteSessionId {
+                    logger.info("Checking server for \(rec.filename) (session \(sessionId))")
+                    if let status = try? await APIClient.shared.inferenceStatus(sessionId: sessionId) {
+                        logger.info("Server says \(rec.filename) is \(status.status)")
+                        switch status.status {
+                        case "done":
+                            rec.uploadStateRaw = UploadState.analyzed.rawValue
+                            rec.uploadError = nil
+                            try? context.save()
+                            continue
+                        case "processing":
+                            rec.uploadStateRaw = UploadState.uploaded.rawValue
+                            rec.uploadError = nil
+                            try? context.save()
+                            continue
+                        default:
+                            break
+                        }
+                    } else {
+                        logger.warning("Failed to reach server for \(rec.filename)")
+                    }
+                }
+                logger.info("Re-queuing \(rec.filename) for upload")
+                rec.uploadStateRaw = UploadState.pending.rawValue
+                rec.uploadError = nil
+            }
+            try? context.save()
+        }
+
+        // Phase B: reconcile pending recordings against the server by filename
+        let pendingRaw = UploadState.pending.rawValue
+        let pendingDesc = FetchDescriptor<Recording>(
+            predicate: #Predicate<Recording> { $0.uploadStateRaw == pendingRaw }
+        )
+        let pending = (try? context.fetch(pendingDesc)) ?? []
+        guard !pending.isEmpty else { return }
+
+        let filenames = pending.map(\.filename)
+        logger.info("Reconciling \(filenames.count) pending recordings against server")
+
+        guard let serverStatus = try? await APIClient.shared.fileStatus(filenames: filenames) else {
+            logger.warning("Failed to reach server for file status reconciliation")
             return
         }
 
-        logger.info("Recovering \(stale.count) stale recordings")
-
-        for rec in stale {
-            if let sessionId = rec.remoteSessionId {
-                logger.info("Checking server for \(rec.filename) (session \(sessionId))")
-                if let status = try? await APIClient.shared.inferenceStatus(sessionId: sessionId) {
-                    logger.info("Server says \(rec.filename) is \(status.status)")
-                    switch status.status {
-                    case "done":
-                        rec.uploadStateRaw = UploadState.analyzed.rawValue
-                        rec.uploadError = nil
-                        try? context.save()
-                        continue
-                    case "processing":
-                        rec.uploadStateRaw = UploadState.uploaded.rawValue
-                        rec.uploadError = nil
-                        try? context.save()
-                        continue
-                    default:
-                        break
-                    }
-                } else {
-                    logger.warning("Failed to reach server for \(rec.filename)")
-                }
+        for rec in pending {
+            switch serverStatus[rec.filename] {
+            case "analysed":
+                logger.info("Server already analysed \(rec.filename)")
+                rec.uploadStateRaw = UploadState.analyzed.rawValue
+                rec.uploadError = nil
+            case "uploaded":
+                logger.info("Server has \(rec.filename) but not analysed")
+                rec.uploadStateRaw = UploadState.uploaded.rawValue
+                rec.uploadError = nil
+            default:
+                break  // still pending, will be uploaded
             }
-            logger.info("Re-queuing \(rec.filename) for upload")
-            rec.uploadStateRaw = UploadState.pending.rawValue
-            rec.uploadError = nil
         }
         try? context.save()
     }
