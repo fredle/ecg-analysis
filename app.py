@@ -511,8 +511,12 @@ def analyse_files(filepaths, on_progress=None):
         start_time = parse_timestamp_from_filename(filepath)
         emit(f"  Decoded {len(raw_samples):,} samples @ {ORIG_SAMPLE_RATE} Hz")
 
-        save_raw_ecg_to_parquet(basename, raw_samples, start_time)
-        emit(f"  Raw ECG saved to data/ecg_raw/ecg_raw_{start_time.strftime('%Y%m%d')}.parquet")
+        try:
+            save_raw_ecg_to_parquet(basename, raw_samples, start_time)
+            emit(f"  Raw ECG saved to data/ecg_raw/ecg_raw_{start_time.strftime('%Y%m%d')}.parquet")
+        except Exception as e:
+            log.warning("Failed to save raw ECG parquet for %s: %s", basename, e)
+            emit(f"  Warning: raw ECG save failed ({e}), continuing with analysis")
 
         ecg_125 = np.array(raw_samples, dtype=np.float32)
         ecg_100 = resample_125_to_100(ecg_125)
