@@ -69,6 +69,9 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
             if decoded.status == "error" {
                 return .error(sessionId: decoded.session_id, message: decoded.error ?? "Inference failed")
             }
+            if decoded.status == "pending" {
+                return .pending(sessionId: decoded.session_id)
+            }
             return .done(sessionId: decoded.session_id)
         }
         return .skipped

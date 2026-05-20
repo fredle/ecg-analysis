@@ -81,13 +81,22 @@ struct LibraryView: View {
 
     private var uploadsSection: some View {
         Section("Activity") {
-            if uploadQueue.isUploading || uploadQueue.queueDepth > 0 {
+            if uploadQueue.isUploading {
                 HStack(spacing: 8) {
                     ProgressView()
                     Text("Uploading…")
                     Spacer()
-                    Text("\(uploadQueue.queueDepth) in queue")
+                    if uploadQueue.queueDepth > 1 {
+                        Text("\(uploadQueue.queueDepth - 1) more in queue")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.subheadline)
+            } else if uploadQueue.queueDepth > 0 {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock")
                         .foregroundStyle(.secondary)
+                    Text("\(uploadQueue.queueDepth) waiting to upload")
                 }
                 .font(.subheadline)
             }
@@ -96,8 +105,6 @@ struct LibraryView: View {
                     ProgressView()
                     Text("Analysing \(uploadQueue.inferenceCount) recording\(uploadQueue.inferenceCount == 1 ? "" : "s")…")
                     Spacer()
-                    Text("~\(uploadQueue.inferenceCount * 2)–\(uploadQueue.inferenceCount * 3) min")
-                        .foregroundStyle(.secondary)
                 }
                 .font(.subheadline)
             }

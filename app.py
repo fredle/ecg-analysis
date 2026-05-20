@@ -1267,38 +1267,16 @@ def api_upload():
         shutil.rmtree(session_dir, ignore_errors=True)
         return jsonify({"error": "No valid R-files were uploaded"}), 400
 
-    # Run inference synchronously within this request.
-    r_files = sorted([
-        os.path.join(session_dir, f)
-        for f in os.listdir(session_dir)
-        if re.search(r"R\d{14}$", f)
-    ])
+    # Mark session as pending inference (iOS will trigger it separately).
+    _set_inference_status(session_id, "pending")
+    log.info("Upload complete for session %s (%d files), inference pending", session_id, len(accepted))
 
-    inference_status = "done"
-    inference_error = None
-    if r_files:
-        try:
-            report = analyse_files(r_files)
-            save_episodes_to_parquet(report)
-            save_hourly_to_parquet(report)
-            report_path = os.path.join(session_dir, "report.json")
-            with open(report_path, "w") as fh:
-                json.dump(report, fh)
-            log.info("Upload + inference complete for session %s (%d files)", session_id, len(r_files))
-        except Exception as e:
-            log.exception("Inference failed for session %s", session_id)
-            inference_status = "error"
-            inference_error = str(e)
-
-    resp = {
+    return jsonify({
         "session_id": session_id,
         "files": accepted,
         "count": len(accepted),
-        "status": inference_status,
-    }
-    if inference_error:
-        resp["error"] = inference_error
-    return jsonify(resp), 200
+        "status": "pending",
+    }), 200
 
 
 @app.route("/api/file_status", methods=["POST"])

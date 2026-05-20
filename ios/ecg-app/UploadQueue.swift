@@ -161,6 +161,7 @@ final class UploadQueue {
     private func uploadOne(_ rec: Recording, in context: ModelContext) async {
         rec.uploadStateRaw = UploadState.uploading.rawValue
         rec.uploadError = nil
+        lastError = nil
         try? context.save()
 
         do {
@@ -174,7 +175,12 @@ final class UploadQueue {
                 logger.info("Server skipped \(rec.filename)")
                 rec.uploadStateRaw = UploadState.skipped.rawValue
                 try? context.save()
-                return
+
+            case .pending(let sessionId):
+                logger.info("Uploaded \(rec.filename), inference pending (session \(sessionId))")
+                rec.remoteSessionId = sessionId
+                rec.uploadStateRaw = UploadState.uploaded.rawValue
+                try? context.save()
 
             case .done(let sessionId):
                 logger.info("Upload + inference done for \(rec.filename), session \(sessionId)")
@@ -198,7 +204,7 @@ final class UploadQueue {
         }
     }
 
-    // MARK: - Phase 2: Poll for inference completion
+    // MARK: - Phase 2: Trigger inference and poll for completion
 
     private func runInferencePoll() async {
         guard let context = modelContext else { return }
@@ -224,6 +230,7 @@ final class UploadQueue {
                     case "done":
                         logger.info("Inference done for \(rec.filename)")
                         rec.uploadStateRaw = UploadState.analyzed.rawValue
+                        rec.uploadError = nil
                         try? context.save()
                     case "pending":
                         // File uploaded but inference never started — trigger it
@@ -235,7 +242,7 @@ final class UploadQueue {
                         rec.uploadError = status.error ?? "Inference failed"
                         try? context.save()
                     default:
-                        break
+                        break  // "processing" — check again next cycle
                     }
                 } catch let e as APIError {
                     // 404 = session gone from server, need to re-upload

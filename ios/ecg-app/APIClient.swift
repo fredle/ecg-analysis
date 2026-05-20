@@ -123,11 +123,12 @@ struct APIClient: Sendable {
         let session_id: String
         let files: [String]
         let count: Int
-        let status: String?  // "done" or "error"
+        let status: String?  // "pending", "done", or "error"
         let error: String?
     }
 
     enum UploadResult {
+        case pending(sessionId: String)
         case done(sessionId: String)
         case error(sessionId: String, message: String)
         case skipped
@@ -163,6 +164,9 @@ struct APIClient: Sendable {
             if let decoded = try? JSONDecoder().decode(UploadResponse.self, from: data) {
                 if decoded.status == "error" {
                     return .error(sessionId: decoded.session_id, message: decoded.error ?? "Inference failed")
+                }
+                if decoded.status == "pending" {
+                    return .pending(sessionId: decoded.session_id)
                 }
                 return .done(sessionId: decoded.session_id)
             }
