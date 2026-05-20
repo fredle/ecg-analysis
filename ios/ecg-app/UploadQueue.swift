@@ -95,10 +95,17 @@ final class UploadQueue {
             try? context.save()
         }
 
-        // Phase B: reconcile pending recordings against the server by filename
+        // Phase B: reconcile pending recordings against the server by filename.
+        // Match both explicit "pending" and empty string (legacy recordings that
+        // predate upload state tracking — the getter treats these as .pending).
         let pendingRaw = UploadState.pending.rawValue
+        let emptyRaw = ""
+        let usbRaw = RecordingSource.usbImport.rawValue
         let pendingDesc = FetchDescriptor<Recording>(
-            predicate: #Predicate<Recording> { $0.uploadStateRaw == pendingRaw }
+            predicate: #Predicate<Recording> {
+                ($0.uploadStateRaw == pendingRaw || $0.uploadStateRaw == emptyRaw) &&
+                $0.sourceRaw == usbRaw
+            }
         )
         let pending = (try? context.fetch(pendingDesc)) ?? []
         guard !pending.isEmpty else { return }
