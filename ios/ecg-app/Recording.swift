@@ -4,6 +4,10 @@ import SwiftData
 enum RecordingSource: String, Codable {
     case liveLocal
     case usbImport
+    case bleImport
+
+    /// Sources whose bytes live on disk and should be uploaded + analysed.
+    var isUploadable: Bool { self != .liveLocal }
 }
 
 enum UploadState: String, Codable {
@@ -44,7 +48,7 @@ final class Recording {
         self.deviceId = nil
         self.samplesData = nil
         self.sourceRaw = source.rawValue
-        self.uploadStateRaw = (source == .usbImport ? UploadState.pending : .notApplicable).rawValue
+        self.uploadStateRaw = (source.isUploadable ? UploadState.pending : .notApplicable).rawValue
     }
 
     var source: RecordingSource {
@@ -62,7 +66,7 @@ final class Recording {
             if let s = UploadState(rawValue: uploadStateRaw) {
                 return s
             }
-            return source == .usbImport ? .pending : .notApplicable
+            return source.isUploadable ? .pending : .notApplicable
         }
         set { uploadStateRaw = newValue.rawValue }
     }
@@ -86,7 +90,7 @@ final class Recording {
             return data.withUnsafeBytes { raw in
                 Array(raw.bindMemory(to: Int16.self))
             }
-        case .usbImport:
+        case .usbImport, .bleImport:
             return samples
         }
     }

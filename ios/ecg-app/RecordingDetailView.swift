@@ -81,7 +81,7 @@ struct RecordingDetailView: View {
             if let device = recording.deviceId {
                 Text(device).font(.caption2).foregroundStyle(.secondary)
             }
-            if recording.source == .usbImport {
+            if recording.source.isUploadable {
                 UploadStatusLabel(state: recording.uploadState)
             }
         }
@@ -124,7 +124,8 @@ struct RecordingDetailView: View {
 
     private func computeScale() -> (mid: Double, halfSpan: Double) {
         guard samples.count > 10 else { return (0, 500) }
-        var sorted = samples
+        var sorted = samples.filter { !$0.isECGSaturation }
+        guard sorted.count > 10 else { return (0, 500) }
         sorted.sort()
         let p05 = Double(sorted[Int(Double(sorted.count) * 0.05)])
         let p95 = Double(sorted[Int(Double(sorted.count) * 0.95)])

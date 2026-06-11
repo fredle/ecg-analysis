@@ -77,14 +77,12 @@ final class UploadQueue {
 
     // MARK: - Reconciliation (server is the source of truth)
 
-    /// Compare every non-terminal usbImport recording against the server's
-    /// authoritative per-file state and adopt it. Runs once on launch.
+    /// Compare every non-terminal uploadable recording (USB or Bluetooth import)
+    /// against the server's authoritative per-file state and adopt it. Runs once
+    /// on launch. Live-local recordings are `.notApplicable`, which isn't a
+    /// recoverable state, so they're naturally excluded by the state filter.
     private func reconcile(in context: ModelContext) async {
-        let usbRaw = RecordingSource.usbImport.rawValue
-        let desc = FetchDescriptor<Recording>(
-            predicate: #Predicate<Recording> { $0.sourceRaw == usbRaw }
-        )
-        let all = (try? context.fetch(desc)) ?? []
+        let all = (try? context.fetch(FetchDescriptor<Recording>())) ?? []
         let candidates = all.filter { Self.recoverableStates.contains($0.uploadStateRaw) }
         guard !candidates.isEmpty else { return }
 

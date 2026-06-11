@@ -279,7 +279,7 @@ final class ViewerViewModel {
         for i in 0..<samples.count {
             while gapIdx < gaps.count && gaps[gapIdx].upperBound < i { gapIdx += 1 }
             if gapIdx < gaps.count && gaps[gapIdx].contains(i) { continue }
-            vals.append(samples[i])
+            if !samples[i].isECGSaturation { vals.append(samples[i]) }
         }
         guard vals.count > 10 else { return }
         vals.sort()

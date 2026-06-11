@@ -85,7 +85,8 @@ struct WaveformView: View {
 
         for i in 0..<samples.count {
             let x = xFor(i)
-            if let f = fillerSentinel, samples[i] == f {
+            let isNoData = samples[i].isECGSaturation || (fillerSentinel.map { samples[i] == $0 } ?? false)
+            if isNoData {
                 if tracing { tracing = false }
                 if fillerRunStart == nil { fillerRunStart = x }
             } else {
@@ -118,6 +119,7 @@ struct WaveformView: View {
         var lo: Int16 = .max
         var hi: Int16 = .min
         for s in samples {
+            if s.isECGSaturation { continue }
             if let f = fillerSentinel, s == f { continue }
             if s < lo { lo = s }
             if s > hi { hi = s }

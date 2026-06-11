@@ -267,11 +267,17 @@ function renderChart(data, episodes) {
   const nSamples   = samples.length;
   const intervalMs = 1000 / sr;
 
+  // The ER1 emits ±32767 (and beyond, undecoded) as saturation / lead-off
+  // sentinels, not real samples. Excluded from the y-scale and not plotted so a
+  // single one doesn't blow out the vertical scale.
+  const SAT = 32767;
+
   // ── Auto-scale Y (within data regions only) ──
   let yMin = Infinity, yMax = -Infinity;
   for (let i = 0; i < nSamples; i++) {
     const ms = startMs + i * intervalMs;
     if (!isInDataRange(ms, ranges)) continue;
+    if (Math.abs(samples[i]) >= SAT) continue;
     if (samples[i] < yMin) yMin = samples[i];
     if (samples[i] > yMax) yMax = samples[i];
   }
@@ -395,9 +401,12 @@ function renderChart(data, episodes) {
 
     let lo = Infinity, hi = -Infinity;
     for (let s = sLo; s < sHi; s++) {
+      if (Math.abs(samples[s]) >= SAT) continue;
       if (samples[s] < lo) lo = samples[s];
       if (samples[s] > hi) hi = samples[s];
     }
+    // Whole column was saturation → treat as no data, break the trace.
+    if (!isFinite(lo)) { penDown = false; continue; }
 
     const x   = PAD_LEFT + px + 0.5;
     const yLo = yOf(lo);

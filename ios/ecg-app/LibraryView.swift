@@ -6,6 +6,7 @@ struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @Environment(UploadQueue.self) private var uploadQueue
+    @Environment(ECGCoordinator.self) private var coordinator
     @Query(sort: \Recording.startedAt, order: .reverse) private var recordings: [Recording]
     @AppStorage("er1FolderBookmark") private var bookmarkData: Data?
 
@@ -14,9 +15,14 @@ struct LibraryView: View {
     @State private var showingPicker = false
     @State private var safeToDisconnect = false
 
+    @State private var isPulling = false
+    @State private var pullProgress: String?
+    @State private var pullStatus: String?
+
     var body: some View {
         NavigationStack {
             List {
+                bluetoothSection
                 usbSection
                 if uploadQueue.isUploading || uploadQueue.queueDepth > 0 || uploadQueue.inferenceCount > 0 || uploadQueue.lastError != nil {
                     uploadsSection
@@ -35,6 +41,42 @@ struct LibraryView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { runSyncIfPossible() }
         }
+    }
+
+    // MARK: - Bluetooth pull
+
+    private var bluetoothSection: some View {
+        Section("Bluetooth") {
+            Button {
+                Task { await runBluetoothPull() }
+            } label: {
+                HStack {
+                    Label("Pull recordings from device", systemImage: "antenna.radiowaves.left.and.right")
+                    Spacer()
+                    if isPulling { ProgressView() }
+                }
+            }
+            .disabled(isPulling || !isDeviceConnected || coordinator.isRecording)
+
+            if !isDeviceConnected {
+                Text("Connect your ER1 to pull stored recordings.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if coordinator.isRecording {
+                Text("Stop the live recording before pulling.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let progress = pullProgress {
+                Text(progress).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+            if let status = pullStatus {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var isDeviceConnected: Bool {
+        if case .connected = coordinator.client.state { return true }
+        return false
     }
 
     // MARK: - USB
@@ -133,7 +175,7 @@ struct LibraryView: View {
                         Button(role: .destructive) { delete(rec) } label: {
                             Label("Delete", systemImage: "trash")
                         }
-                        if rec.source == .usbImport && rec.uploadState != .uploading {
+                        if rec.source.isUploadable && rec.uploadState != .uploading {
                             Button { uploadQueue.retry(rec) } label: {
                                 Label(rec.uploadState == .pending ? "Upload" : "Re-upload",
                                       systemImage: "arrow.clockwise")
@@ -155,6 +197,49 @@ struct LibraryView: View {
     }
 
     // MARK: - Actions
+
+    @MainActor
+    private func runBluetoothPull() async {
+        guard !isPulling, isDeviceConnected, !coordinator.isRecording else { return }
+        isPulling = true
+        pullStatus = nil
+        pullProgress = "Listing recordings…"
+        safeToDisconnect = false
+
+        let client = coordinator.client
+        client.beginTransfer()
+        defer {
+            client.endTransfer()
+            isPulling = false
+            pullProgress = nil
+            uploadQueue.kick()
+        }
+
+        do {
+            let names = try await client.listFiles()
+            let existing = Set(recordings.map(\.filename))
+            // Device names are `R<ts>`; an imported recording has filename `R<ts>`.
+            let wanted = names.filter { !existing.contains($0) }
+            guard !wanted.isEmpty else {
+                pullStatus = "Up to date \u{2014} \(names.count) on device, all imported."
+                return
+            }
+
+            let importer = BLEImporter(modelContainer: modelContext.container)
+            var imported = 0
+            for (i, name) in wanted.enumerated() {
+                pullProgress = "Downloading \(i + 1)/\(wanted.count): \(name)"
+                let data = try await client.downloadFile(name) { received, total in
+                    let pct = total > 0 ? received * 100 / total : 0
+                    pullProgress = "\(name)  \(i + 1)/\(wanted.count)  \(pct)%"
+                }
+                if try await importer.importFile(name: name, data: data) { imported += 1 }
+            }
+            pullStatus = "Imported \(imported) recording\(imported == 1 ? "" : "s")."
+        } catch {
+            pullStatus = "Pull failed: \(error.localizedDescription)"
+        }
+    }
 
     private func runSyncIfPossible() {
         guard !isSyncing, bookmarkData != nil else { return }
@@ -345,7 +430,7 @@ private struct UploadSummary: View {
 
     private func tally() -> (analyzed: Int, analysing: Int, uploading: Int, pending: Int, failed: Int) {
         var analyzed = 0, analysing = 0, uploading = 0, pending = 0, failed = 0
-        for r in recordings where r.source == .usbImport {
+        for r in recordings where r.source.isUploadable {
             switch r.uploadState {
             case .analyzed, .skipped: analyzed += 1
             case .uploaded:           analysing += 1

@@ -1,5 +1,14 @@
 import Foundation
 
+extension Int16 {
+    /// The ER1 emits `Int16.max` (+32767) and `Int16.min` (−32768) as
+    /// saturation / lead-off sentinels — the ADC clipped or the electrode was
+    /// disconnected — rather than real ECG samples. These are excluded from
+    /// auto-scaling and not drawn on the trace, so one doesn't blow out the
+    /// vertical scale. (`Int16.min` doubles as the live "no data" filler.)
+    var isECGSaturation: Bool { self == .max || self == .min }
+}
+
 enum ECGDecoderError: Error {
     case tooShort
     case badHeaderSize(UInt8)

@@ -7,6 +7,12 @@ enum ViatomCmd: UInt8 {
     case getRtRri         = 0x07
     case getInfo          = 0xE1
     case syncTime         = 0xEC
+    // Stored-file transfer (ER1 family). Verified against firmware:
+    // list → start (returns size) → data (per-offset chunks) → end.
+    case getFileList      = 0xF1
+    case readFileStart    = 0xF2
+    case readFileData     = 0xF3
+    case readFileEnd      = 0xF4
 }
 
 enum ViatomProtocol {
@@ -40,6 +46,55 @@ enum ViatomProtocol {
         return Data(frame)
     }
 
+    /// Payload for `readFileStart`: 16-byte filename field (UTF-8, NUL-padded /
+    /// truncated) followed by a uint32-LE start offset (0 to read from the top).
+    static func readFileStartPayload(name: String, offset: UInt32 = 0) -> [UInt8] {
+        var p = Array(name.utf8.prefix(16))
+        while p.count < 16 { p.append(0) }
+        p.append(contentsOf: u32le(offset))
+        return p
+    }
+
+    /// Payload for `readFileData`: uint32-LE offset of the next chunk to fetch
+    /// (i.e. the number of bytes already received).
+    static func readFileDataPayload(offset: UInt32) -> [UInt8] {
+        u32le(offset)
+    }
+
+    /// Parse a `getFileList` response payload: a 1-byte count followed by that
+    /// many 16-byte UTF-8 filename records (NUL/space padded).
+    static func parseFileList(_ payload: [UInt8]) -> [String] {
+        guard let count = payload.first else { return [] }
+        var names: [String] = []
+        var idx = 1
+        for _ in 0..<Int(count) {
+            guard idx + 16 <= payload.count else { break }
+            let record = payload[idx..<idx + 16]
+            idx += 16
+            let nameBytes = record.prefix { $0 != 0 }
+            if let s = String(bytes: nameBytes, encoding: .utf8) {
+                let trimmed = s.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { names.append(trimmed) }
+            }
+        }
+        return names
+    }
+
+    static func u32le(_ value: UInt32) -> [UInt8] {
+        [UInt8(value & 0xFF),
+         UInt8((value >> 8) & 0xFF),
+         UInt8((value >> 16) & 0xFF),
+         UInt8((value >> 24) & 0xFF)]
+    }
+
+    static func readU32le<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
+        var value: UInt32 = 0
+        for (i, b) in bytes.prefix(4).enumerated() {
+            value |= UInt32(b) << (8 * i)
+        }
+        return value
+    }
+
     static func syncTimePayload(_ date: Date = Date()) -> [UInt8] {
         let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         let year = UInt16(comps.year ?? 2026)
@@ -57,6 +112,7 @@ enum ViatomProtocol {
 
 struct ViatomPacket {
     let cmd: UInt8
+    let status: UInt8   // byte[3]: 1 = success on file-transfer responses
     let seq: UInt8
     let payload: [UInt8]
 }
@@ -119,7 +175,7 @@ final class PacketReassembler {
             let crcCalc = ViatomProtocol.crc8(Array(frame[0..<(total - 1)]))
             if crcCalc == frame[total - 1] {
                 let payload = Array(frame[7..<(7 + payloadLen)])
-                out.append(ViatomPacket(cmd: cmd, seq: frame[4], payload: payload))
+                out.append(ViatomPacket(cmd: cmd, status: frame[3], seq: frame[4], payload: payload))
                 buffer.removeFirst(total)
             } else {
                 buffer.removeFirst()

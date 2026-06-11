@@ -113,12 +113,15 @@ struct PaperECGRow: View {
         for i in 0..<sampleCount {
             while gapIdx < gaps.count && gaps[gapIdx].upperBound < i { gapIdx += 1 }
             let inGap = gapIdx < gaps.count && gaps[gapIdx].contains(i)
-            if inGap {
+            let sample = samples[startIndex + i]
+            // Saturation/lead-off sentinels are missing data: break the trace
+            // rather than spiking to the edge.
+            if inGap || sample.isECGSaturation {
                 drawing = false
                 continue
             }
             let x = CGFloat(i) * xScale
-            let y = yFor(samples[startIndex + i])
+            let y = yFor(sample)
             if drawing {
                 path.addLine(to: CGPoint(x: x, y: y))
             } else {

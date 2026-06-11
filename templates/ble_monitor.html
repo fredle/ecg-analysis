@@ -414,7 +414,9 @@ function parseEcgPacket(bytes) {
     const off = 29 + i * 2;
     let raw = bytes[off] | (bytes[off + 1] << 8);
     if (raw > 32767) raw -= 65536;
-    samples[i] = raw * ECG_SCALE;
+    // ±32767 are saturation / lead-off sentinels, not real samples — drop them
+    // (null = gap) so they don't blow out the auto-scaled y-axis.
+    samples[i] = Math.abs(raw) >= 32767 ? null : raw * ECG_SCALE;
   }
 
   // Append to rolling buffer

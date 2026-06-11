@@ -596,11 +596,16 @@ function ecgStripDraw() {
   const intervalMs = 1000 / sr;
   const totalMs = nSamples * intervalMs;
 
+  // ±32767 (and beyond) are saturation / lead-off sentinels, not real samples —
+  // excluded from the y-scale and not plotted so they don't blow out the scale.
+  const SAT = 32767;
+
   // Y autoscale within recorded regions only
   let yMin = Infinity, yMax = -Infinity;
   for (let i = 0; i < nSamples; i++) {
     const ms = startMs + i * intervalMs;
     if (!ecgIsInRanges(ms, ranges)) continue;
+    if (Math.abs(samples[i]) >= SAT) continue;
     if (samples[i] < yMin) yMin = samples[i];
     if (samples[i] > yMax) yMax = samples[i];
   }
@@ -712,9 +717,11 @@ function ecgStripDraw() {
     if (!ecgIsInRanges(midMs, ranges)) { penDown = false; continue; }
     let lo = Infinity, hi = -Infinity;
     for (let s = sLo; s < sHi; s++) {
+      if (Math.abs(samples[s]) >= SAT) continue;
       if (samples[s] < lo) lo = samples[s];
       if (samples[s] > hi) hi = samples[s];
     }
+    if (!isFinite(lo)) { penDown = false; continue; }  // whole column saturated → break
     const x = ECG_PAD_L + px + 0.5;
     const yLo = yOf(lo), yHi = yOf(hi);
     const yMid = (yLo + yHi) / 2;

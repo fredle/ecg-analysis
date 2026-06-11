@@ -77,6 +77,31 @@ final class ER1Client: NSObject {
     private var seq: UInt8 = 0
     private var keepaliveTimer: Timer?
 
+    // MARK: - Stored-file transfer
+    //
+    // File download and the 1 Hz real-time keepalive can't share the link, so a
+    // pull runs in `transferMode`: the keepalive/playback are paused and notify
+    // packets are routed to a single in-flight request/response waiter instead
+    // of the live ECG handler. `beginTransfer()`/`endTransfer()` bracket a pull.
+
+    enum TransferError: LocalizedError {
+        case notConnected, timeout, deviceError, disconnected
+
+        var errorDescription: String? {
+            switch self {
+            case .notConnected: return "Device not connected"
+            case .timeout:      return "Device stopped responding"
+            case .deviceError:  return "Device reported a read error"
+            case .disconnected: return "Device disconnected during transfer"
+            }
+        }
+    }
+
+    @ObservationIgnored private(set) var transferMode = false
+    @ObservationIgnored private var waiterCmd: UInt8?
+    @ObservationIgnored private var waiterCont: CheckedContinuation<ViatomPacket, Error>?
+    @ObservationIgnored private var waiterId = 0
+
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
@@ -128,6 +153,98 @@ final class ER1Client: NSObject {
             central.cancelPeripheralConnection(p)
         }
     }
+
+    // MARK: - File transfer (public API)
+
+    /// Enter download mode: pause the real-time keepalive and playback so the
+    /// link is free for file transfer. Always pair with `endTransfer()`.
+    func beginTransfer() {
+        transferMode = true
+        stopKeepalive()
+        stopPlayback()
+    }
+
+    /// Leave download mode and resume the live stream if still connected.
+    func endTransfer() {
+        transferMode = false
+        guard case .connected = state, peripheral != nil, writeChar != nil else { return }
+        send(.getRtData, payload: [0x7D])
+        keepaliveTimer?.invalidate()
+        keepaliveTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.send(.getRtData, payload: [0x7D]) }
+        }
+    }
+
+    /// List the recordings stored on the device (names like `R<YYYYMMDDHHMMSS>`).
+    func listFiles() async throws -> [String] {
+        let pkt = try await sendAndWait(.getFileList, expect: ViatomCmd.getFileList.rawValue)
+        return ViatomProtocol.parseFileList(pkt.payload)
+    }
+
+    /// Download one stored file by name, reporting `(received, total)` byte
+    /// progress. Returns the raw (delta-compressed) file bytes.
+    func downloadFile(_ name: String,
+                      onProgress: (@MainActor (Int, Int) -> Void)? = nil) async throws -> Data {
+        let start = try await sendAndWait(
+            .readFileStart,
+            payload: ViatomProtocol.readFileStartPayload(name: name),
+            expect: ViatomCmd.readFileStart.rawValue
+        )
+        guard start.status == 1 else { throw TransferError.deviceError }
+        let total = Int(ViatomProtocol.readU32le(start.payload))
+        guard total > 0 else {
+            _ = try? await sendAndWait(.readFileEnd, expect: ViatomCmd.readFileEnd.rawValue)
+            return Data()
+        }
+
+        var data = Data(capacity: total)
+        while data.count < total {
+            let chunk = try await sendAndWait(
+                .readFileData,
+                payload: ViatomProtocol.readFileDataPayload(offset: UInt32(data.count)),
+                expect: ViatomCmd.readFileData.rawValue
+            )
+            guard chunk.status == 1 else { throw TransferError.deviceError }
+            if chunk.payload.isEmpty { throw TransferError.deviceError }  // no progress → bail
+            data.append(contentsOf: chunk.payload)
+            onProgress?(min(data.count, total), total)
+        }
+        _ = try? await sendAndWait(.readFileEnd, expect: ViatomCmd.readFileEnd.rawValue)
+        return data.prefix(total)
+    }
+
+    /// Send one command and await the next packet whose cmd matches `expect`.
+    private func sendAndWait(_ cmd: ViatomCmd,
+                             payload: [UInt8] = [],
+                             expect: UInt8,
+                             timeout: TimeInterval = 10) async throws -> ViatomPacket {
+        guard peripheral != nil, writeChar != nil else { throw TransferError.notConnected }
+        waiterId &+= 1
+        let id = waiterId
+        return try await withCheckedThrowingContinuation { cont in
+            waiterCmd = expect
+            waiterCont = cont
+            send(cmd, payload: payload)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(timeout))
+                if waiterId == id, let c = waiterCont {
+                    waiterCmd = nil
+                    waiterCont = nil
+                    c.resume(throwing: TransferError.timeout)
+                }
+            }
+        }
+    }
+
+    /// Fail any in-flight transfer request (called on disconnect).
+    private func failPendingTransfer(_ error: Error) {
+        transferMode = false
+        guard let cont = waiterCont else { return }
+        waiterCmd = nil
+        waiterCont = nil
+        waiterId &+= 1
+        cont.resume(throwing: error)
+    }
 }
 
 extension ER1Client: CBCentralManagerDelegate {
@@ -176,6 +293,7 @@ extension ER1Client: CBCentralManagerDelegate {
                                     error: Error?) {
         Task { @MainActor in
             self.stopKeepalive()
+            self.failPendingTransfer(TransferError.disconnected)
             self.writeChar = nil
             self.notifyChar = nil
             self.hrChar = nil
@@ -189,6 +307,7 @@ extension ER1Client: CBCentralManagerDelegate {
                                     didFailToConnect peripheral: CBPeripheral,
                                     error: Error?) {
         Task { @MainActor in
+            self.failPendingTransfer(TransferError.disconnected)
             self.peripheral = nil
             self.state = .idle
             self.beginScan()
@@ -342,7 +461,7 @@ extension ER1Client: CBPeripheralDelegate {
         while i < paperSamples.count {
             while gIdx < paperGaps.count && paperGaps[gIdx].upperBound < i { gIdx += 1 }
             if gIdx < paperGaps.count && paperGaps[gIdx].contains(i) { i += 1; continue }
-            vals.append(paperSamples[i])
+            if !paperSamples[i].isECGSaturation { vals.append(paperSamples[i]) }
             i += step
         }
         guard vals.count > 10 else { return }
@@ -383,6 +502,16 @@ extension ER1Client: CBPeripheralDelegate {
     private func handleViatom(_ data: Data) {
         let packets = reassembler.append(data)
         for pkt in packets {
+            // Resolve an in-flight file-transfer request before anything else.
+            if let want = waiterCmd, pkt.cmd == want, let cont = waiterCont {
+                waiterCmd = nil
+                waiterCont = nil
+                waiterId &+= 1   // invalidate the pending timeout for this request
+                cont.resume(returning: pkt)
+                continue
+            }
+            if transferMode { continue }  // ignore stray live packets mid-transfer
+
             if pkt.cmd == ViatomCmd.getRtData.rawValue, let ecg = ECGPacket(payload: pkt.payload) {
                 batteryPct = Int(ecg.batteryPct)
                 batteryState = Int(ecg.batteryState)
