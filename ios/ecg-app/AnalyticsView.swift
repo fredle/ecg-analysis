@@ -3,6 +3,9 @@ import Charts
 
 struct AnalyticsView: View {
     @State private var vm = AnalyticsViewModel()
+    @State private var showHR = false
+    @State private var showBeats = false
+    @State private var showCoverage = false
 
     var body: some View {
         NavigationStack {
@@ -15,6 +18,12 @@ struct AnalyticsView: View {
                         Text("Hour").tag(Granularity.hour)
                     }
                     .pickerStyle(.segmented)
+                }
+
+                Section("Overlays") {
+                    Toggle("Avg heart rate", isOn: $showHR)
+                    Toggle("Number of beats", isOn: $showBeats)
+                    Toggle("% data coverage", isOn: $showCoverage)
                 }
 
                 Section("PVC burden") {
@@ -42,19 +51,67 @@ struct AnalyticsView: View {
                 Button("Retry") { vm.reload() }
             }
         case .ready(let resp):
-            ReadyView(response: resp, granularity: vm.granularity)
+            ReadyView(response: resp, granularity: vm.granularity,
+                      showHR: showHR, showBeats: showBeats, showCoverage: showCoverage)
         }
     }
+}
+
+private struct OverlayPoint: Identifiable {
+    let bucket: Date
+    let value: Double      // scaled into the burden axis
+    let series: String
+    var id: String { "\(series)-\(bucket.timeIntervalSince1970)" }
 }
 
 private struct ReadyView: View {
     let response: PVCBurdenResponse
     let granularity: Granularity
+    let showHR: Bool
+    let showBeats: Bool
+    let showCoverage: Bool
 
     private var totalBeats: Int  { response.data.reduce(0) { $0 + $1.total_beats } }
     private var totalPVC:  Int  { response.data.reduce(0) { $0 + $1.pvc_beats } }
     private var burden:    Double {
         totalBeats > 0 ? Double(totalPVC) / Double(totalBeats) * 100.0 : 0
+    }
+
+    // Overlays share the burden Y-axis, so each metric is normalised into
+    // [0, burdenScale]. Distinct colours + a legend keep them readable.
+    private let hrColor = Color.purple
+    private let beatsColor = Color.teal
+    private let coverageColor = Color.gray
+
+    private var burdenScale: Double {
+        max(response.data.map(\.pvc_burden).max() ?? 0, 5)
+    }
+
+    private var overlaySeries: [OverlayPoint] {
+        var pts: [OverlayPoint] = []
+        let scale = burdenScale
+        func add(_ name: String, lo: Double, hi: Double, _ value: (PVCBurdenPoint) -> Double?) {
+            let span = hi > lo ? hi - lo : 1
+            for p in response.data {
+                guard let v = value(p) else { continue }
+                let t = min(max((v - lo) / span, 0), 1)
+                pts.append(OverlayPoint(bucket: p.bucket, value: t * scale, series: name))
+            }
+        }
+        if showHR {
+            let hrs = response.data.compactMap(\.avg_hr).filter { $0 > 0 }
+            if let lo = hrs.min(), let hi = hrs.max() {
+                add("Avg HR", lo: lo, hi: hi) { ($0.avg_hr ?? 0) > 0 ? $0.avg_hr : nil }
+            }
+        }
+        if showBeats {
+            let hi = response.data.map { Double($0.total_beats) }.max() ?? 0
+            add("Beats", lo: 0, hi: hi) { Double($0.total_beats) }
+        }
+        if showCoverage {
+            add("Coverage", lo: 0, hi: 100) { $0.coverage_pct }
+        }
+        return pts
     }
 
     private var nightRanges: [DateInterval] {
@@ -105,9 +162,28 @@ private struct ReadyView: View {
                         )
                         .foregroundStyle(.orange)
                     }
+                    ForEach(overlaySeries) { pt in
+                        LineMark(
+                            x: .value("Bucket", pt.bucket, unit: granularity == .day ? .day : .hour),
+                            y: .value("Overlay", pt.value),
+                            series: .value("Series", pt.series)
+                        )
+                        .foregroundStyle(by: .value("Series", pt.series))
+                        .interpolationMethod(.catmullRom)
+                    }
                 }
+                .chartForegroundStyleScale([
+                    "Avg HR": hrColor, "Beats": beatsColor, "Coverage": coverageColor,
+                ])
+                .chartLegend(overlaySeries.isEmpty ? .hidden : .visible)
                 .chartYAxisLabel("Burden %")
                 .frame(height: 220)
+
+                if !overlaySeries.isEmpty {
+                    Text("Overlays are scaled to fit the burden axis and show relative trends, not absolute values.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 4)

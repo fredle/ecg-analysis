@@ -37,6 +37,12 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .empty-state { text-align: center; color: var(--text-dim); padding: 60px 0; font-size: 14px; }
   .hint { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+  .ov-group { display: flex; gap: 14px; align-items: center; }
+  .ov-group label { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer; }
+  .ov-group input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+  .overlay-legend { display: flex; gap: 18px; font-size: 11px; color: var(--text-dim); margin-top: 12px; flex-wrap: wrap; }
+  .overlay-legend .ol-item { display: flex; align-items: center; gap: 6px; }
+  .overlay-legend .ol-line { display: inline-block; width: 16px; height: 0; border-top: 2px solid; }
 {% endblock %}
 
 {% block content %}
@@ -59,6 +65,14 @@
     End date
     <input type="date" id="endDate">
   </label>
+  <div>
+    <div class="controls-label">Overlays</div>
+    <div class="ov-group">
+      <label><input type="checkbox" id="ovHr" onchange="drawChart()"> Avg HR</label>
+      <label><input type="checkbox" id="ovBeats" onchange="drawChart()"> Beats</label>
+      <label><input type="checkbox" id="ovCov" onchange="drawChart()"> Coverage</label>
+    </div>
+  </div>
   <div style="align-self:flex-end">
     <button class="load-btn" onclick="loadData()">Load</button>
   </div>
@@ -85,6 +99,7 @@
   <div class="chart-wrap">
     <canvas id="burdenChart"></canvas>
   </div>
+  <div id="overlayLegend" class="overlay-legend"></div>
   <div id="chartEmpty" class="empty-state" style="display:none">No data for selected range.</div>
   <div id="chartLoading" class="loading"><div class="spinner"></div><br>Loading&hellip;</div>
 </div>
@@ -159,13 +174,16 @@ function updateSubtitle(start,end) {
 }
 
 function renderSummary() {
-  var burdens=chartData.map(function(d){return d.pvc_burden;});
-  var avg=burdens.reduce(function(a,b){return a+b;},0)/burdens.length;
-  var peak=Math.max.apply(null,burdens);
+  // Averages are over buckets that actually have data; gap-filled blank
+  // rows (total_beats === 0) would otherwise drag the mean toward zero.
+  var withData=chartData.filter(function(d){return d.total_beats>0;});
+  var burdens=withData.map(function(d){return d.pvc_burden;});
+  var avg=burdens.length?burdens.reduce(function(a,b){return a+b;},0)/burdens.length:0;
+  var peak=burdens.length?Math.max.apply(null,burdens):0;
   var totalPvc=chartData.reduce(function(a,d){return a+d.pvc_beats;},0);
   var totalBeats=chartData.reduce(function(a,d){return a+d.total_beats;},0);
   document.getElementById('summaryRow').style.display='flex';
-  card('cardDays',chartData.length,granularity==='day'?'Days':'Hourly Buckets','','');
+  card('cardDays',withData.length+' / '+chartData.length,granularity==='day'?'Days w/ Data':'Buckets w/ Data','','');
   card('cardAvg',avg.toFixed(1),'Avg PVC Burden','%','danger');
   card('cardPeak',peak.toFixed(1),'Peak PVC Burden','%','danger');
   card('cardTotalPvc',totalPvc.toLocaleString(),'Total PVCs','','accent');
@@ -179,6 +197,7 @@ function card(id,value,label,unit,cls) {
 
 var barRects=[];
 function drawChart() {
+  if (!chartData||chartData.length===0){document.getElementById('overlayLegend').innerHTML='';return;}
   var canvas=document.getElementById('burdenChart');
   var dpr=window.devicePixelRatio||1;
   var W=canvas.parentElement.clientWidth, H=320;
@@ -284,6 +303,9 @@ function drawChart() {
     }
   }
 
+  // Optional metric overlays drawn as lines on their own auto-scaled range.
+  drawOverlays(ctx, PAD_L, PAD_T, cW, cH, slotW, n);
+
   var maxLabels=Math.floor(cW/72), step=Math.max(1,Math.ceil(n/maxLabels));
   ctx.fillStyle='#6b7280'; ctx.font='10px sans-serif'; ctx.textAlign='center';
   for (var i=0;i<n;i+=step) {
@@ -311,11 +333,68 @@ function drawChart() {
     for (var i=0;i<barRects.length;i++){var b=barRects[i];if(mx>=b.x&&mx<=b.x+b.w){hit=b.d;break;}}
     if (!hit){var idx=Math.floor((mx-PAD_L)/slotW);if(idx>=0&&idx<chartData.length)hit=chartData[idx];}
     if (hit){
-      var color=hit.pvc_burden<5?'#16a34a':hit.pvc_burden<10?'#d97706':'#dc2626';
-      showTip(evt,'<strong style="color:'+color+'">'+hit.pvc_burden.toFixed(2)+'% PVC Burden</strong><br>'+formatBucket(hit.bucket)+'<br>PVC beats: <strong>'+hit.pvc_beats.toLocaleString()+'</strong><br>Total beats: '+hit.total_beats.toLocaleString());
+      if (hit.total_beats===0){
+        showTip(evt,'<strong>'+formatBucket(hit.bucket)+'</strong><br><span style="color:#6b7280">No data</span>');
+      } else {
+        var color=hit.pvc_burden<5?'#16a34a':hit.pvc_burden<10?'#d97706':'#dc2626';
+        var html='<strong style="color:'+color+'">'+hit.pvc_burden.toFixed(2)+'% PVC Burden</strong><br>'+formatBucket(hit.bucket)+
+          '<br>PVC beats: <strong>'+hit.pvc_beats.toLocaleString()+'</strong>'+
+          '<br>Total beats: '+hit.total_beats.toLocaleString();
+        if (hit.avg_hr!==null&&hit.avg_hr!==undefined) html+='<br>Avg HR: '+Math.round(hit.avg_hr)+' bpm';
+        if (hit.coverage_pct!==null&&hit.coverage_pct!==undefined) html+='<br>Coverage: '+hit.coverage_pct.toFixed(1)+'%';
+        showTip(evt,html);
+      }
     } else {hideTip();}
   };
   canvas.onmouseleave=hideTip;
+}
+
+// Overlay metric definitions. `scale` controls the vertical range:
+//   auto = min..max of the data, zero = 0..max, pct = 0..100
+var OVERLAYS=[
+  {id:'ovHr',    key:'avg_hr',       label:'Avg HR',   unit:' bpm', color:'#7c3aed', scale:'auto', dp:0},
+  {id:'ovBeats', key:'total_beats',  label:'Beats',    unit:'',     color:'#0891b2', scale:'zero', dp:0},
+  {id:'ovCov',   key:'coverage_pct', label:'Coverage', unit:'%',    color:'#64748b', scale:'pct',  dp:0},
+];
+function overlayActive(o){var el=document.getElementById(o.id);return el&&el.checked;}
+function overlayRange(o){
+  var vals=chartData.map(function(d){return d[o.key];}).filter(function(v){return v!==null&&v!==undefined;});
+  if (o.scale==='pct') return [0,100];
+  if (!vals.length) return null;
+  var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals);
+  if (o.scale==='zero') mn=0;
+  if (mx<=mn) mx=mn+1;
+  return [mn,mx];
+}
+function drawOverlays(ctx, PAD_L, PAD_T, cW, cH, slotW, n) {
+  var legend=[];
+  OVERLAYS.forEach(function(o){
+    if (!overlayActive(o)) return;
+    var range=overlayRange(o); if (!range) return;
+    var lo=range[0], hi=range[1];
+    var yFor=function(v){var t=(v-lo)/(hi-lo); t=Math.max(0,Math.min(1,t)); return PAD_T+cH-(0.05*cH+t*0.9*cH);};
+    ctx.strokeStyle=o.color; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.setLineDash([]);
+    ctx.beginPath();
+    var pen=false;
+    for (var i=0;i<n;i++){
+      var v=chartData[i][o.key];
+      if (v===null||v===undefined){pen=false;continue;}
+      var x=PAD_L+i*slotW+slotW/2, y=yFor(v);
+      if (!pen){ctx.moveTo(x,y);pen=true;} else {ctx.lineTo(x,y);}
+    }
+    ctx.stroke();
+    // Dots so single isolated points are still visible
+    ctx.fillStyle=o.color;
+    for (var j=0;j<n;j++){
+      var dv=chartData[j][o.key];
+      if (dv===null||dv===undefined) continue;
+      var dx=PAD_L+j*slotW+slotW/2, dy=yFor(dv);
+      ctx.beginPath(); ctx.arc(dx,dy,n<=60?2.2:1.2,0,Math.PI*2); ctx.fill();
+    }
+    legend.push('<span class="ol-item"><span class="ol-line" style="border-color:'+o.color+'"></span>'+
+      o.label+' ('+lo.toFixed(o.dp)+'–'+hi.toFixed(o.dp)+o.unit+')</span>');
+  });
+  document.getElementById('overlayLegend').innerHTML=legend.join('');
 }
 
 var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];

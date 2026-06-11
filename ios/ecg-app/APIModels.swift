@@ -208,6 +208,9 @@ struct PVCBurdenPoint: Codable, Sendable, Identifiable {
     let total_beats: Int
     let pvc_beats: Int
     let pvc_burden: Double
+    // Optional metrics for chart overlays; nil for buckets without data.
+    let avg_hr: Double?
+    let coverage_pct: Double?
     var id: Date { bucket }
 }
 
