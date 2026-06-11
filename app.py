@@ -77,6 +77,69 @@ def _get_inference_status(session_id: str) -> dict | None:
         store = _load_inference_status()
         return store.get(session_id)
 
+# ---------------------------------------------------------------------------
+# Durable, filename-keyed recording status store.
+#
+# The R-file name (R<YYYYMMDDHHMMSS>) is the stable identity of a recording —
+# upload session ids are ephemeral and must NOT be used to decide whether a
+# recording has been analysed. This store is the single source of truth for
+# per-recording state: {filename: {state, size, session_id, updated_at, error?}}
+# where state in {"uploaded", "analyzing", "analyzed", "failed"}.
+# ---------------------------------------------------------------------------
+FILE_STATUS_PATH = os.path.join(DATA_DIR, "file_status.json")
+_file_status_lock = threading.Lock()
+
+
+def _load_file_status() -> dict:
+    if os.path.exists(FILE_STATUS_PATH):
+        try:
+            with open(FILE_STATUS_PATH, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_file_status(store: dict) -> None:
+    tmp = FILE_STATUS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(store, fh, indent=2)
+    os.replace(tmp, FILE_STATUS_PATH)
+
+
+def _set_file_state(filename: str, state: str, *, size: int | None = None,
+                    session_id: str | None = None, error: str | None = None) -> None:
+    with _file_status_lock:
+        store = _load_file_status()
+        entry = store.get(filename, {})
+        entry["state"] = state
+        if size is not None:
+            entry["size"] = size
+        if session_id is not None:
+            entry["session_id"] = session_id
+        if error:
+            entry["error"] = error
+        elif "error" in entry:
+            del entry["error"]
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        store[filename] = entry
+        _save_file_status(store)
+
+
+def _analysed_filenames() -> set[str]:
+    """Set of filenames known to be analysed: the durable status store unioned
+    with whatever is already in the hourly parquet (backfills recordings that
+    were analysed before this store existed)."""
+    files = {fn for fn, e in _load_file_status().items()
+             if e.get("state") == "analyzed"}
+    if os.path.isfile(HOURLY_PARQUET_PATH):
+        try:
+            hr_df = pd.read_parquet(HOURLY_PARQUET_PATH, columns=["recording_file"])
+            files |= set(hr_df["recording_file"].unique())
+        except Exception:
+            pass
+    return files
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(ECG_PARQUET_DIR, exist_ok=True)
@@ -1046,6 +1109,45 @@ def is_valid_r_filename(filename):
     return bool(re.search(r"R\d{14}$", filename))
 
 
+def _analyse_session(session_id, session_dir, filenames):
+    """Run inference on the R-files in session_dir, persist results, and update
+    the durable per-file status store. Idempotent and safe to retry — parquet
+    writes upsert by recording time range. Returns (status, error)."""
+    report_path = os.path.join(session_dir, "report.json")
+    if os.path.isfile(report_path):
+        for fn in filenames:
+            _set_file_state(fn, "analyzed", session_id=session_id)
+        return "done", None
+
+    r_files = sorted([
+        os.path.join(session_dir, f)
+        for f in os.listdir(session_dir)
+        if is_valid_r_filename(f)
+    ])
+    if not r_files:
+        return "error", "No R-files found"
+
+    for fn in filenames:
+        _set_file_state(fn, "analyzing", session_id=session_id)
+    try:
+        report = analyse_files(r_files)
+        save_episodes_to_parquet(report)
+        save_hourly_to_parquet(report)
+        with open(report_path, "w") as fh:
+            json.dump(report, fh)
+        for fn in filenames:
+            _set_file_state(fn, "analyzed", session_id=session_id)
+        _set_inference_status(session_id, "done")
+        log.info("Inference complete for session %s (%d files)", session_id, len(filenames))
+        return "done", None
+    except Exception as e:
+        log.exception("Inference failed for session %s", session_id)
+        for fn in filenames:
+            _set_file_state(fn, "failed", session_id=session_id, error=str(e))
+        _set_inference_status(session_id, "error", error=str(e))
+        return "error", str(e)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -1221,7 +1323,13 @@ def upload():
 
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
-    """JSON-only upload endpoint for the iOS app."""
+    """Upload one or more R-files and analyse them in the same request.
+
+    Identity is the filename. Already-analysed files are returned immediately
+    as "analyzed" without re-running inference, so a re-upload is always safe
+    and cheap. Otherwise inference runs synchronously and the response carries
+    the final state ("analyzed" or "error"). The iOS client sends this from a
+    background URLSession, so the long request survives app suspension."""
     if "files" not in request.files:
         return jsonify({"error": "No files selected"}), 400
 
@@ -1234,6 +1342,7 @@ def api_upload():
     os.makedirs(session_dir, exist_ok=True)
 
     registry = _load_upload_registry()
+    already_analysed = _analysed_filenames()
     accepted = []
     for f in files:
         if not f.filename or not is_valid_r_filename(f.filename):
@@ -1245,7 +1354,7 @@ def api_upload():
         dest = os.path.join(session_dir, f.filename)
 
         if registry.get(f.filename) == file_size:
-            # Already have this file — copy from raw archive into session
+            # Already have these bytes — copy from raw archive into session
             os.remove(tmp_dest)
             raw_src = os.path.join(RAW_DIR, f.filename)
             if os.path.isfile(raw_src):
@@ -1262,45 +1371,85 @@ def api_upload():
 
         registry[f.filename] = file_size
         _save_upload_registry(registry)
+        _set_file_state(f.filename, "uploaded", size=file_size, session_id=session_id)
 
     if not accepted:
         shutil.rmtree(session_dir, ignore_errors=True)
         return jsonify({"error": "No valid R-files were uploaded"}), 400
 
-    # Mark session as pending inference (iOS will trigger it separately).
-    _set_inference_status(session_id, "pending")
-    log.info("Upload complete for session %s (%d files), inference pending", session_id, len(accepted))
+    # Idempotency: if every accepted file is already analysed, skip inference.
+    to_analyse = [fn for fn in accepted if fn not in already_analysed]
+    if not to_analyse:
+        log.info("Upload %s: all %d file(s) already analysed, skipping inference",
+                 session_id, len(accepted))
+        return jsonify({
+            "session_id": session_id, "files": accepted,
+            "count": len(accepted), "status": "analyzed",
+        }), 200
 
-    return jsonify({
-        "session_id": session_id,
-        "files": accepted,
-        "count": len(accepted),
-        "status": "pending",
-    }), 200
+    status, error = _analyse_session(session_id, session_dir, accepted)
+    resp = {"session_id": session_id, "files": accepted, "count": len(accepted),
+            "status": "analyzed" if status == "done" else "error"}
+    if error:
+        resp["error"] = error
+    return jsonify(resp), 200
+
+
+@app.route("/api/analyse", methods=["POST"])
+def api_analyse():
+    """Analyse files the server already has (in data/raw), keyed by filename —
+    no need to re-send the bytes. Used by the client to finish analysis for
+    recordings the server received but never analysed. Idempotent."""
+    filenames = request.json.get("files", []) if request.is_json else []
+    filenames = [fn for fn in filenames if is_valid_r_filename(fn)]
+    if not filenames:
+        return jsonify({"error": "No files provided"}), 400
+
+    already_analysed = _analysed_filenames()
+    results: dict[str, str] = {}
+    pending: list[str] = []
+    for fn in filenames:
+        if fn in already_analysed:
+            results[fn] = "analyzed"
+        elif os.path.isfile(os.path.join(RAW_DIR, fn)):
+            pending.append(fn)
+        else:
+            results[fn] = "unknown"
+
+    if pending:
+        session_id = uuid.uuid4().hex[:12]
+        session_dir = os.path.join(UPLOAD_FOLDER, session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        for fn in pending:
+            shutil.copy2(os.path.join(RAW_DIR, fn), os.path.join(session_dir, fn))
+        status, error = _analyse_session(session_id, session_dir, pending)
+        for fn in pending:
+            results[fn] = "analyzed" if status == "done" else "error"
+
+    return jsonify({"files": results}), 200
 
 
 @app.route("/api/file_status", methods=["POST"])
 def api_file_status():
-    """Given a list of filenames, return which are uploaded and/or analysed."""
+    """Given a list of filenames, return the authoritative per-file state:
+    "analysed" | "uploaded" | "failed" | "unknown"."""
     filenames = request.json.get("files", []) if request.is_json else []
     if not filenames:
         return jsonify({"error": "No files provided"}), 400
 
+    analysed_files = _analysed_filenames()
+    store = _load_file_status()
     registry = _load_upload_registry()
-
-    analysed_files: set[str] = set()
-    if os.path.isfile(HOURLY_PARQUET_PATH):
-        try:
-            hr_df = pd.read_parquet(HOURLY_PARQUET_PATH, columns=["recording_file"])
-            analysed_files = set(hr_df["recording_file"].unique())
-        except Exception:
-            pass
 
     results = {}
     for fname in filenames:
+        entry = store.get(fname, {})
+        state = entry.get("state")
         if fname in analysed_files:
             results[fname] = "analysed"
-        elif fname in registry:
+        elif state == "failed":
+            results[fname] = "failed"
+        elif state in ("uploaded", "analyzing") or fname in registry:
             results[fname] = "uploaded"
         else:
             results[fname] = "unknown"
@@ -1310,67 +1459,45 @@ def api_file_status():
 
 @app.route("/api/inference/<session_id>", methods=["POST"])
 def api_inference_start(session_id):
-    """Kick off inference for an uploaded session. Runs synchronously."""
+    """Kick off inference for an uploaded session. Runs synchronously.
+    Idempotent — a completed session returns "done" without re-analysing.
+    Retained for the web UI; the iOS app analyses during upload."""
     session_dir = os.path.join(UPLOAD_FOLDER, session_id)
     if not os.path.isdir(session_dir):
         return jsonify({"error": "Session not found"}), 404
 
-    report_path = os.path.join(session_dir, "report.json")
-    if os.path.isfile(report_path):
-        return jsonify({"session_id": session_id, "status": "done"}), 200
-
-    r_files = sorted([
-        os.path.join(session_dir, f)
-        for f in os.listdir(session_dir)
-        if re.search(r"R\d{14}$", f)
-    ])
-    if not r_files:
+    filenames = sorted([f for f in os.listdir(session_dir) if is_valid_r_filename(f)])
+    if not filenames:
         return jsonify({"error": "No R-files found"}), 400
 
-    try:
-        report = analyse_files(r_files)
-        save_episodes_to_parquet(report)
-        save_hourly_to_parquet(report)
-        with open(report_path, "w") as f:
-            json.dump(report, f)
-        log.info("Inference complete for session %s", session_id)
-        return jsonify({"session_id": session_id, "status": "done"}), 200
-    except Exception as e:
-        log.exception("Inference failed for session %s", session_id)
-        return jsonify({"session_id": session_id, "status": "error", "error": str(e)}), 200
+    status, error = _analyse_session(session_id, session_dir, filenames)
+    resp = {"session_id": session_id, "status": "done" if status == "done" else "error"}
+    if error:
+        resp["error"] = error
+    return jsonify(resp), 200
 
 
 @app.route("/api/inference/<session_id>/status")
 def api_inference_status(session_id):
-    """Poll inference status. Runs inference synchronously if not yet done."""
+    """Pure read of inference status — never triggers analysis. Reports "done"
+    once results exist, otherwise the session's recorded state."""
     session_dir = os.path.join(UPLOAD_FOLDER, session_id)
-    if not os.path.isdir(session_dir):
-        return jsonify({"error": "Session not found"}), 404
-
     report_path = os.path.join(session_dir, "report.json")
     if os.path.isfile(report_path):
         return jsonify({"session_id": session_id, "status": "done"}), 200
 
-    # Inference hasn't run yet — run it now synchronously
-    r_files = sorted([
-        os.path.join(session_dir, f)
-        for f in os.listdir(session_dir)
-        if re.search(r"R\d{14}$", f)
-    ])
-    if not r_files:
-        return jsonify({"session_id": session_id, "status": "error", "error": "No R-files found"}), 200
+    if not os.path.isdir(session_dir):
+        return jsonify({"error": "Session not found"}), 404
 
-    try:
-        report = analyse_files(r_files)
-        save_episodes_to_parquet(report)
-        save_hourly_to_parquet(report)
-        with open(report_path, "w") as f:
-            json.dump(report, f)
-        log.info("Inference complete for session %s (triggered by status poll)", session_id)
-        return jsonify({"session_id": session_id, "status": "done"}), 200
-    except Exception as e:
-        log.exception("Inference failed for session %s", session_id)
-        return jsonify({"session_id": session_id, "status": "error", "error": str(e)}), 200
+    info = _get_inference_status(session_id) or {}
+    status = info.get("status", "pending")
+    # Normalise to the client's vocabulary: pending | processing | done | error
+    if status == "analyzing":
+        status = "processing"
+    resp = {"session_id": session_id, "status": status}
+    if info.get("error"):
+        resp["error"] = info["error"]
+    return jsonify(resp), 200
 
 
 @app.route("/analyse/<session_id>")
@@ -1723,9 +1850,47 @@ def analytics():
     return render_template("analytics.html")
 
 
+def _parse_flexible_dt(s):
+    """Parse a 'YYYY-MM-DD[ HH:MM[:SS]]' string into a naive datetime, or None."""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _bucket_sequence(start_dt, end_dt, granularity, cap=10000):
+    """Yield every bucket datetime in the half-open range [start, end).
+
+    Buckets are aligned to midnight (day) or to the hour (hour), matching the
+    DuckDB CAST/DATE_TRUNC used for aggregation, so every date/time in the
+    visible range is emitted even when there is no underlying data.
+    """
+    if granularity == "day":
+        cur = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        last = end_dt - timedelta(microseconds=1)
+        step = timedelta(days=1)
+        cond = lambda c: c <= last
+    else:
+        cur = start_dt.replace(minute=0, second=0, microsecond=0)
+        step = timedelta(hours=1)
+        cond = lambda c: c < end_dt
+    count = 0
+    while cond(cur) and count < cap:
+        yield cur
+        cur += step
+        count += 1
+
+
 @app.route("/api/pvc_burden")
 def api_pvc_burden():
     """PVC burden aggregated by day or hour.
+
+    Every bucket in the requested range is returned, including blank rows
+    (zero beats) for periods with no data, so the chart can show a continuous
+    time axis. Each row also carries avg_hr and coverage_pct for optional
+    overlays.
 
     Query params:
         granularity – 'day' or 'hour' (default: 'day')
@@ -1738,44 +1903,68 @@ def api_pvc_burden():
     start = request.args.get("start", thirty_days_ago.strftime("%Y-%m-%d %H:%M:%S"))
     end = request.args.get("end", (today + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"))
 
-    if not os.path.isfile(HOURLY_PARQUET_PATH):
+    start_dt = _parse_flexible_dt(start)
+    end_dt = _parse_flexible_dt(end)
+
+    if not os.path.isfile(HOURLY_PARQUET_PATH) or start_dt is None or end_dt is None:
         return jsonify({"data": [], "granularity": granularity})
+
+    bucket_seconds = 86400 if granularity == "day" else 3600
+    trunc = "CAST(hour_start AS DATE)" if granularity == "day" else "DATE_TRUNC('hour', hour_start)"
 
     con = duckdb.connect()
     try:
-        if granularity == "day":
-            rows = con.execute(
-                "SELECT CAST(hour_start AS DATE) AS bucket, "
-                "       SUM(total_beats) AS total_beats, "
-                "       SUM(pvc_beats) AS pvc_beats "
-                "FROM read_parquet(?) "
-                "WHERE hour_start >= ?::TIMESTAMP AND hour_start < ?::TIMESTAMP "
-                "GROUP BY bucket ORDER BY bucket",
-                [HOURLY_PARQUET_PATH, start, end]
-            ).fetchdf()
-        else:
-            rows = con.execute(
-                "SELECT DATE_TRUNC('hour', hour_start) AS bucket, "
-                "       SUM(total_beats) AS total_beats, "
-                "       SUM(pvc_beats) AS pvc_beats "
-                "FROM read_parquet(?) "
-                "WHERE hour_start >= ?::TIMESTAMP AND hour_start < ?::TIMESTAMP "
-                "GROUP BY bucket ORDER BY bucket",
-                [HOURLY_PARQUET_PATH, start, end]
-            ).fetchdf()
+        rows = con.execute(
+            f"SELECT {trunc} AS bucket, "
+            "       SUM(total_beats) AS total_beats, "
+            "       SUM(pvc_beats) AS pvc_beats, "
+            "       SUM(duration_seconds) AS covered_seconds, "
+            "       SUM(hr_bpm * duration_seconds) FILTER (WHERE hr_bpm > 0) AS hr_weight, "
+            "       SUM(duration_seconds) FILTER (WHERE hr_bpm > 0) AS hr_dur "
+            "FROM read_parquet(?) "
+            "WHERE hour_start >= ?::TIMESTAMP AND hour_start < ?::TIMESTAMP "
+            "GROUP BY bucket ORDER BY bucket",
+            [HOURLY_PARQUET_PATH, start, end]
+        ).fetchdf()
     finally:
         con.close()
 
+    # Index aggregates by their normalised bucket datetime for gap-fill lookup.
+    agg = {pd.Timestamp(row["bucket"]).to_pydatetime(): row for _, row in rows.iterrows()}
+
     data = []
-    for _, row in rows.iterrows():
+    for bucket_dt in _bucket_sequence(start_dt, end_dt, granularity):
+        bucket_str = (bucket_dt.strftime("%Y-%m-%d") if granularity == "day"
+                      else bucket_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        row = agg.get(bucket_dt)
+        if row is None:
+            data.append({
+                "bucket": bucket_str,
+                "total_beats": 0,
+                "pvc_beats": 0,
+                "pvc_burden": 0,
+                "avg_hr": None,
+                "coverage_pct": 0,
+            })
+            continue
+
         tb = int(row["total_beats"])
         pvc = int(row["pvc_beats"])
         burden = round((pvc / tb * 100), 2) if tb > 0 else 0
+        covered = 0.0 if pd.isna(row["covered_seconds"]) else float(row["covered_seconds"])
+        coverage = round(min(covered / bucket_seconds * 100, 100.0), 1)
+        hr_dur = row["hr_dur"]
+        if hr_dur is not None and not pd.isna(hr_dur) and hr_dur > 0:
+            avg_hr = round(float(row["hr_weight"]) / float(hr_dur), 1)
+        else:
+            avg_hr = None
         data.append({
-            "bucket": str(row["bucket"]),
+            "bucket": bucket_str,
             "total_beats": tb,
             "pvc_beats": pvc,
             "pvc_burden": burden,
+            "avg_hr": avg_hr,
+            "coverage_pct": coverage,
         })
 
     return jsonify({"data": data, "granularity": granularity})

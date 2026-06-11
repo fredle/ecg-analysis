@@ -94,11 +94,24 @@ struct APIClient: Sendable {
         let files: [String: String]  // filename -> "analysed" | "uploaded" | "unknown"
     }
 
-    /// POST /api/file_status — check which files the server already has.
+    /// POST /api/file_status — authoritative per-file state, keyed by filename.
+    /// Returns filename -> "analysed" | "uploaded" | "failed" | "unknown".
     func fileStatus(filenames: [String]) async throws -> [String: String] {
-        let url = baseURL.appendingPathComponent("api/file_status")
+        try await postFiles("api/file_status", filenames: filenames, timeout: 30)
+    }
+
+    /// POST /api/analyse — ask the server to analyse files it already holds
+    /// (by filename, no bytes re-sent). Runs inference synchronously, so this
+    /// can take minutes. Returns filename -> "analyzed" | "error" | "unknown".
+    func analyse(filenames: [String]) async throws -> [String: String] {
+        try await postFiles("api/analyse", filenames: filenames, timeout: 900)
+    }
+
+    private func postFiles(_ path: String, filenames: [String], timeout: TimeInterval) async throws -> [String: String] {
+        let url = baseURL.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = try JSONEncoder().encode(["files": filenames])

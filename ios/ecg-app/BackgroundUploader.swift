@@ -19,7 +19,9 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
         let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
-        config.timeoutIntervalForResource = 600
+        // Upload requests run inference inline; allow time for large recordings.
+        // If the client still gives up, launch reconciliation recovers the state.
+        config.timeoutIntervalForResource = 900
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 

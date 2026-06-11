@@ -57,17 +57,12 @@ final class Recording {
 
     var uploadState: UploadState {
         get {
+            // Empty rawValue (legacy recordings) decodes to nil; fall back by
+            // source. The real state is reconciled against the server on launch.
             if let s = UploadState(rawValue: uploadStateRaw) {
-                // Correct stale "pending" state if we have proof of upload
-                if s == .pending, remoteSessionId != nil {
-                    return .analyzed
-                }
                 return s
             }
-            if source == .usbImport {
-                return remoteSessionId != nil ? .analyzed : .pending
-            }
-            return .notApplicable
+            return source == .usbImport ? .pending : .notApplicable
         }
         set { uploadStateRaw = newValue.rawValue }
     }

@@ -30,9 +30,11 @@ EXPOSE 5000
 
 # Run with gunicorn for production (longer timeout for model loading + inference)
 # Cloud Run sets $PORT; fall back to 5000 for local docker use
+# Long timeout: upload requests now run inference inline, and large recordings
+# can take several minutes to analyse.
 CMD gunicorn \
     --bind "0.0.0.0:${PORT:-5000}" \
-    --timeout 600 \
+    --timeout 900 \
     --workers 1 \
     --threads 4 \
     app:app

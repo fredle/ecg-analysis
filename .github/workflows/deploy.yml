@@ -51,6 +51,7 @@ jobs:
             --region "${REGION}" \
             --project "${PROJECT}" \
             --platform managed \
+            --timeout 900 \
             --quiet
 
       - name: Print service URL
