@@ -77,39 +77,73 @@ private struct ReadyView: View {
         totalBeats > 0 ? Double(totalPVC) / Double(totalBeats) * 100.0 : 0
     }
 
-    // Overlays share the burden Y-axis, so each metric is normalised into
-    // [0, burdenScale]. Distinct colours + a legend keep them readable.
     private let hrColor = Color.purple
     private let beatsColor = Color.teal
     private let coverageColor = Color.gray
 
-    private var burdenScale: Double {
-        max(response.data.map(\.pvc_burden).max() ?? 0, 5)
+    // The chart's Y-domain. Bars (burden %) and the normalised Beats/Coverage
+    // overlays all live in 0...yDomainMax; Avg HR gets its own right-hand axis.
+    private var yDomainMax: Double {
+        max((response.data.map(\.pvc_burden).max() ?? 0) * 1.1, 5)
+    }
+
+    /// Rounded bpm range for the Avg HR axis, or nil if HR is off / has no data.
+    private var hrRange: (lo: Double, hi: Double)? {
+        guard showHR else { return nil }
+        let hrs = response.data.compactMap(\.avg_hr).filter { $0 > 0 }
+        guard let mn = hrs.min(), let mx = hrs.max() else { return nil }
+        var lo = (mn / 10).rounded(.down) * 10
+        var hi = (mx / 10).rounded(.up) * 10
+        if hi - lo < 20 { lo = max(0, lo - 10); hi = lo + 30 }
+        if hi <= lo { hi = lo + 20 }
+        return (lo, hi)
+    }
+
+    /// Y-domain positions of the HR axis ticks (HR values mapped into 0...yDomainMax).
+    private var hrAxisPositions: [Double] {
+        guard let r = hrRange else { return [] }
+        let dm = yDomainMax
+        return (0...4).map { i in
+            let bpm = r.lo + (r.hi - r.lo) * Double(i) / 4
+            return (bpm - r.lo) / (r.hi - r.lo) * dm
+        }
+    }
+
+    private func hrBpm(forPosition pos: Double) -> Int {
+        guard let r = hrRange else { return 0 }
+        return Int((r.lo + (pos / yDomainMax) * (r.hi - r.lo)).rounded())
+    }
+
+    private var overlayCaption: String {
+        var parts: [String] = []
+        if hrRange != nil { parts.append("Avg HR uses the right axis (bpm)") }
+        if showBeats || showCoverage { parts.append("Beats/Coverage scaled to fit (not absolute)") }
+        return parts.joined(separator: "; ") + "."
     }
 
     private var overlaySeries: [OverlayPoint] {
         var pts: [OverlayPoint] = []
-        let scale = burdenScale
+        let dm = yDomainMax
         func add(_ name: String, lo: Double, hi: Double, _ value: (PVCBurdenPoint) -> Double?) {
             let span = hi > lo ? hi - lo : 1
             for p in response.data {
                 guard let v = value(p) else { continue }
                 let t = min(max((v - lo) / span, 0), 1)
-                pts.append(OverlayPoint(bucket: p.bucket, value: t * scale, series: name))
+                pts.append(OverlayPoint(bucket: p.bucket, value: t * dm, series: name))
             }
         }
-        if showHR {
-            let hrs = response.data.compactMap(\.avg_hr).filter { $0 > 0 }
-            if let lo = hrs.min(), let hi = hrs.max() {
-                add("Avg HR", lo: lo, hi: hi) { ($0.avg_hr ?? 0) > 0 ? $0.avg_hr : nil }
-            }
+        if let r = hrRange {
+            // HR breaks where there is no data — a zero bpm would be meaningless.
+            add("Avg HR", lo: r.lo, hi: r.hi) { ($0.avg_hr ?? 0) > 0 ? $0.avg_hr : nil }
         }
         if showBeats {
+            // No-data buckets report zero beats.
             let hi = response.data.map { Double($0.total_beats) }.max() ?? 0
             add("Beats", lo: 0, hi: hi) { Double($0.total_beats) }
         }
         if showCoverage {
-            add("Coverage", lo: 0, hi: 100) { $0.coverage_pct }
+            // No-data buckets report zero coverage.
+            add("Coverage", lo: 0, hi: 100) { $0.coverage_pct ?? 0 }
         }
         return pts
     }
@@ -176,11 +210,25 @@ private struct ReadyView: View {
                     "Avg HR": hrColor, "Beats": beatsColor, "Coverage": coverageColor,
                 ])
                 .chartLegend(overlaySeries.isEmpty ? .hidden : .visible)
+                .chartYScale(domain: 0...yDomainMax)
+                .chartYAxis {
+                    AxisMarks(position: .leading)
+                    if hrRange != nil {
+                        AxisMarks(position: .trailing, values: hrAxisPositions) { axisValue in
+                            AxisTick().foregroundStyle(hrColor)
+                            AxisValueLabel {
+                                if let pos = axisValue.as(Double.self) {
+                                    Text("\(hrBpm(forPosition: pos))").foregroundStyle(hrColor)
+                                }
+                            }
+                        }
+                    }
+                }
                 .chartYAxisLabel("Burden %")
                 .frame(height: 220)
 
                 if !overlaySeries.isEmpty {
-                    Text("Overlays are scaled to fit the burden axis and show relative trends, not absolute values.")
+                    Text(overlayCaption)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

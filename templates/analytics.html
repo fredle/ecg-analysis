@@ -204,7 +204,9 @@ function drawChart() {
   canvas.style.width=W+'px'; canvas.style.height=H+'px';
   canvas.width=W*dpr; canvas.height=H*dpr;
   var ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr);
-  var PAD_L=52,PAD_R=16,PAD_T=16,PAD_B=52,cW=W-PAD_L-PAD_R,cH=H-PAD_T-PAD_B;
+  var hrAxisOn=document.getElementById('ovHr').checked &&
+    chartData.some(function(d){return d.avg_hr!==null&&d.avg_hr!==undefined;});
+  var PAD_L=52,PAD_R=hrAxisOn?52:16,PAD_T=16,PAD_B=52,cW=W-PAD_L-PAD_R,cH=H-PAD_T-PAD_B;
   ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
   var burdens=chartData.map(function(d){return d.pvc_burden;});
   var maxBurden=Math.max.apply(null,burdens.concat([1]));
@@ -303,8 +305,9 @@ function drawChart() {
     }
   }
 
-  // Optional metric overlays drawn as lines on their own auto-scaled range.
-  drawOverlays(ctx, PAD_L, PAD_T, cW, cH, slotW, n);
+  // Optional metric overlays: HR on its own right-hand axis, others as
+  // normalised trend lines.
+  drawOverlays(ctx, PAD_L, PAD_R, PAD_T, cW, cH, slotW, n);
 
   var maxLabels=Math.floor(cW/72), step=Math.max(1,Math.ceil(n/maxLabels));
   ctx.fillStyle='#6b7280'; ctx.font='10px sans-serif'; ctx.textAlign='center';
@@ -349,51 +352,74 @@ function drawChart() {
   canvas.onmouseleave=hideTip;
 }
 
-// Overlay metric definitions. `scale` controls the vertical range:
-//   auto = min..max of the data, zero = 0..max, pct = 0..100
-var OVERLAYS=[
-  {id:'ovHr',    key:'avg_hr',       label:'Avg HR',   unit:' bpm', color:'#7c3aed', scale:'auto', dp:0},
-  {id:'ovBeats', key:'total_beats',  label:'Beats',    unit:'',     color:'#0891b2', scale:'zero', dp:0},
-  {id:'ovCov',   key:'coverage_pct', label:'Coverage', unit:'%',    color:'#64748b', scale:'pct',  dp:0},
-];
-function overlayActive(o){var el=document.getElementById(o.id);return el&&el.checked;}
-function overlayRange(o){
-  var vals=chartData.map(function(d){return d[o.key];}).filter(function(v){return v!==null&&v!==undefined;});
-  if (o.scale==='pct') return [0,100];
-  if (!vals.length) return null;
-  var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals);
-  if (o.scale==='zero') mn=0;
-  if (mx<=mn) mx=mn+1;
+var HR_COLOR='#7c3aed';
+function strokePolyline(ctx, n, slotW, PAD_L, getY, color){
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.setLineDash([]);
+  ctx.beginPath();
+  var pen=false;
+  for (var i=0;i<n;i++){
+    var y=getY(i);
+    if (y===null){pen=false;continue;}
+    var x=PAD_L+i*slotW+slotW/2;
+    if (!pen){ctx.moveTo(x,y);pen=true;} else {ctx.lineTo(x,y);}
+  }
+  ctx.stroke();
+  ctx.fillStyle=color;
+  for (var j=0;j<n;j++){
+    var dy=getY(j); if (dy===null) continue;
+    var dx=PAD_L+j*slotW+slotW/2;
+    ctx.beginPath(); ctx.arc(dx,dy,n<=60?2.2:1.2,0,Math.PI*2); ctx.fill();
+  }
+}
+function niceHRRange(vals){
+  var mn=Math.floor(Math.min.apply(null,vals)/10)*10;
+  var mx=Math.ceil(Math.max.apply(null,vals)/10)*10;
+  if (mx-mn<20){ mn=Math.max(0,mn-10); mx=mn+30; }
+  if (mx<=mn) mx=mn+20;
   return [mn,mx];
 }
-function drawOverlays(ctx, PAD_L, PAD_T, cW, cH, slotW, n) {
+function drawOverlays(ctx, PAD_L, PAD_R, PAD_T, cW, cH, slotW, n) {
   var legend=[];
-  OVERLAYS.forEach(function(o){
-    if (!overlayActive(o)) return;
-    var range=overlayRange(o); if (!range) return;
-    var lo=range[0], hi=range[1];
+
+  // ── Avg HR: dedicated right-hand axis (bpm). Breaks where there is no data. ──
+  if (document.getElementById('ovHr').checked) {
+    var hrVals=chartData.map(function(d){return d.avg_hr;})
+                        .filter(function(v){return v!==null&&v!==undefined;});
+    if (hrVals.length) {
+      var r=niceHRRange(hrVals), hlo=r[0], hhi=r[1];
+      var hrY=function(v){var t=(v-hlo)/(hhi-hlo); t=Math.max(0,Math.min(1,t)); return PAD_T+cH-t*cH;};
+      // right-axis ticks + labels
+      ctx.font='10px sans-serif'; ctx.fillStyle=HR_COLOR; ctx.textAlign='left';
+      for (var ti=0; ti<=4; ti++){
+        var bv=hlo+(hhi-hlo)*ti/4;
+        ctx.fillText(Math.round(bv), PAD_L+cW+6, hrY(bv)+3);
+      }
+      ctx.save(); ctx.translate(PAD_L+cW+PAD_R-4, PAD_T+cH/2); ctx.rotate(Math.PI/2);
+      ctx.textAlign='center'; ctx.fillStyle=HR_COLOR; ctx.fillText('Avg HR (bpm)',0,0); ctx.restore();
+      strokePolyline(ctx, n, slotW, PAD_L, function(i){
+        var v=chartData[i].avg_hr;
+        return (v===null||v===undefined)?null:hrY(v);
+      }, HR_COLOR);
+      legend.push('<span class="ol-item"><span class="ol-line" style="border-color:'+HR_COLOR+
+        '"></span>Avg HR (right axis, '+hlo+'–'+hhi+' bpm)</span>');
+    }
+  }
+
+  // ── Beats & Coverage: normalised trend lines; no-data reports as zero. ──
+  var others=[
+    {id:'ovBeats', key:'total_beats',  label:'Beats',    unit:'',  color:'#0891b2', scale:'zero'},
+    {id:'ovCov',   key:'coverage_pct', label:'Coverage', unit:'%', color:'#64748b', scale:'pct'},
+  ];
+  others.forEach(function(o){
+    if (!document.getElementById(o.id).checked) return;
+    var vals=chartData.map(function(d){var x=d[o.key]; return (x===null||x===undefined)?0:x;});
+    var lo=0, hi=(o.scale==='pct')?100:Math.max.apply(null,vals.concat([1]));
     var yFor=function(v){var t=(v-lo)/(hi-lo); t=Math.max(0,Math.min(1,t)); return PAD_T+cH-(0.05*cH+t*0.9*cH);};
-    ctx.strokeStyle=o.color; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.setLineDash([]);
-    ctx.beginPath();
-    var pen=false;
-    for (var i=0;i<n;i++){
-      var v=chartData[i][o.key];
-      if (v===null||v===undefined){pen=false;continue;}
-      var x=PAD_L+i*slotW+slotW/2, y=yFor(v);
-      if (!pen){ctx.moveTo(x,y);pen=true;} else {ctx.lineTo(x,y);}
-    }
-    ctx.stroke();
-    // Dots so single isolated points are still visible
-    ctx.fillStyle=o.color;
-    for (var j=0;j<n;j++){
-      var dv=chartData[j][o.key];
-      if (dv===null||dv===undefined) continue;
-      var dx=PAD_L+j*slotW+slotW/2, dy=yFor(dv);
-      ctx.beginPath(); ctx.arc(dx,dy,n<=60?2.2:1.2,0,Math.PI*2); ctx.fill();
-    }
-    legend.push('<span class="ol-item"><span class="ol-line" style="border-color:'+o.color+'"></span>'+
-      o.label+' ('+lo.toFixed(o.dp)+'–'+hi.toFixed(o.dp)+o.unit+')</span>');
+    strokePolyline(ctx, n, slotW, PAD_L, function(i){return yFor(vals[i]);}, o.color);
+    legend.push('<span class="ol-item"><span class="ol-line" style="border-color:'+o.color+
+      '"></span>'+o.label+' (0–'+Math.round(hi)+o.unit+')</span>');
   });
+
   document.getElementById('overlayLegend').innerHTML=legend.join('');
 }
 
